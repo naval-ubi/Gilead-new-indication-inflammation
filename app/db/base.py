@@ -22,7 +22,8 @@ def get_db():
 
 def add_missing_columns(bind=None) -> list[str]:
     """Dev convenience: create_all() never alters existing tables, so add columns that were introduced after a
-    database was created. Only nullable or defaulted scalar columns are added. Use Alembic in production."""
+    database was created, plus any declared index that is missing. Only nullable or defaulted scalar columns are
+    added. Use Alembic in production."""
     bind = bind or engine
     insp = inspect(bind)
     added = []
@@ -43,4 +44,9 @@ def add_missing_columns(bind=None) -> list[str]:
                     ddl += f" DEFAULT {lit!r}" if not isinstance(lit, str) else f" DEFAULT '{lit}'"
                 conn.execute(text(ddl))
                 added.append(f"{table.name}.{col.name}")
+            existing = {i["name"] for i in inspect(conn).get_indexes(table.name)}
+            for idx in table.indexes:
+                if idx.name not in existing and all(c.name in have or f"{table.name}.{c.name}" in added for c in idx.columns):
+                    idx.create(conn)
+                    added.append(f"index {idx.name}")
     return added

@@ -82,6 +82,13 @@ GET  /admin/overview  /admin/users  /admin/records/{workflow|template|prompt}  /
 
 Interactive docs: `http://localhost:8000/docs`.
 
+Reference PDFs in `docs/` (regenerate after API or model changes; needs `pip install reportlab`):
+
+| Document | Generator |
+|---|---|
+| `docs/API_Screen_Integration_Guide.pdf` – endpoint ↔ screen map for FE | `python docs/build_api_doc.py docs/API_Screen_Integration_Guide.pdf` |
+| `docs/Database_ER_Guide.pdf` – ER diagram, data dictionary, DB commands, PostgreSQL DDL (read from the models) | `PYTHONPATH=. python docs/build_er_doc.py docs/Database_ER_Guide.pdf` |
+
 ### Changes for the updated design (v0.2)
 
 * **Run payload** (`GET /runs/{id}`) now has `steps[].items[]` (sub-lines of each stage; one item per data source in
