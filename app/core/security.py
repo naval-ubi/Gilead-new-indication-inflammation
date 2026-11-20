@@ -2,6 +2,7 @@ import base64
 import hashlib
 import hmac
 import os
+import uuid
 from datetime import datetime, timedelta, timezone
 
 import jwt
@@ -27,7 +28,9 @@ def verify_password(password: str, stored: str) -> bool:
 
 def create_token(user_id: int, role: str) -> str:
     exp = datetime.now(timezone.utc) + timedelta(minutes=settings.jwt_expire_minutes)
-    return jwt.encode({"sub": str(user_id), "role": role, "exp": exp}, settings.jwt_secret, algorithm="HS256")
+    # jti = unique token id, so a single token can be revoked on logout
+    return jwt.encode({"sub": str(user_id), "role": role, "exp": exp, "jti": uuid.uuid4().hex},
+                      settings.jwt_secret, algorithm="HS256")
 
 
 def decode_token(token: str) -> dict:

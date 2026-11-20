@@ -21,13 +21,25 @@ PERMS = {
 }
 
 
-def current_user(db: DB, cred: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)]) -> m.User:
+def token_claims(db: DB, cred: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)]) -> dict:
+    """Decoded, non-revoked token claims (sub, role, exp, jti)."""
     if not cred:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Not authenticated")
     try:
-        uid = int(decode_token(cred.credentials)["sub"])
+        claims = decode_token(cred.credentials)
+        int(claims["sub"])
     except (jwt.PyJWTError, KeyError, ValueError):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or expired token")
+    if claims.get("jti") and db.get(m.RevokedToken, claims["jti"]):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Signed out. Please sign in again")
+    return claims
+
+
+Claims = Annotated[dict, Depends(token_claims)]
+
+
+def current_user(db: DB, claims: Claims) -> m.User:
+    uid = int(claims["sub"])
     user = db.get(m.User, uid)
     if not user or user.status != "Active":
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "User inactive")

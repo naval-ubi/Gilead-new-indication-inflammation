@@ -1,2 +1,5 @@
 venv/
-
+.pytest_cache/
+.env.example
+gilead.db
+test.db 

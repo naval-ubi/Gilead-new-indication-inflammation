@@ -41,7 +41,7 @@ class Run(Base):
     __tablename__ = "runs"
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
-    module: Mapped[str] = mapped_column(String(20), index=True)  # ai|pipeline|cioa
+    module: Mapped[str] = mapped_column(String(20), index=True)  # ai|pipeline|cioa (cioa = Competitive Insights)
     kind: Mapped[str] = mapped_column(String(30), default="Search")  # Search|Workflow run|Report generated
     title: Mapped[str] = mapped_column(String(300))
     question: Mapped[str] = mapped_column(Text)
@@ -58,6 +58,10 @@ class Run(Base):
     saved: Mapped[bool] = mapped_column(Boolean, default=False)
     approved: Mapped[bool] = mapped_column(Boolean, default=False)
     parent_run_id: Mapped[int | None] = mapped_column(ForeignKey("runs.id"), nullable=True)
+    # Conversation the run belongs to (AI Search / Pipeline / Competitive Insights threads). = id of the first turn.
+    thread_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    notify: Mapped[bool] = mapped_column(Boolean, default=False)       # "Notify me when ready"
+    workflow: Mapped[str] = mapped_column(String(40), default="")     # Competitive Insights workflow key
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, index=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
     deleted: Mapped[bool] = mapped_column(Boolean, default=False)  # "Clear history" is a soft delete
@@ -215,3 +219,12 @@ class AuditLog(Base):
     before: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     after: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, index=True)
+
+
+class RevokedToken(Base):
+    """Tokens ended by POST /auth/logout. Rows can be purged once expires_at has passed."""
+    __tablename__ = "revoked_tokens"
+    jti: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    revoked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)

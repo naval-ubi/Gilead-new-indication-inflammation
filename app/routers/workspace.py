@@ -2,15 +2,20 @@
 from datetime import datetime, timedelta, timezone
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import func, or_, select
 
 from app.core.deps import DB, CurrentUser, audit, require
 from app.db import models as m
+from app.services.catalog import MODULE_NAMES
 
 router = APIRouter(tags=["workspace"])
-MODULE_NAMES = {"ai": "AI Search", "pipeline": "Drug Pipeline Explorer", "cioa": "CIOA", "scoring": "Prioritization Scoring"}
+HOME_CATEGORIES = {  # Home KPI cards -> card list. label/date_label/action are what each card shows.
+    "in_progress": {"label": "In Progress", "badge": "In Progress", "date_label": "Last Worked", "action": "resume"},
+    "recent_results": {"label": "Completed", "badge": "Completed", "date_label": "Completed", "action": "view"},
+    "saved": {"label": "Saved Searches", "badge": "Saved", "date_label": "Last Used", "action": "run_again"},
+}
 
 
 def utc_now():
@@ -22,23 +27,52 @@ def utc_now():
 def home(db: DB, user: CurrentUser, tab: Literal["in_progress", "recent_results", "saved"] = "in_progress",
          module: str | None = None, sort: Literal["date", "module"] = "date", desc: bool = True,
          limit: int = Query(50, le=200)):
+    from app.routers.runs import progress_pct  # avoid import cycle at module load
+
     rows: list[dict] = []
+    meta = HOME_CATEGORIES[tab]
     if tab == "saved":
         q = select(m.WorkspaceItem).where(m.WorkspaceItem.owner_id == user.id, m.WorkspaceItem.archived.is_(False))
         for i in db.scalars(q):
-            rows.append({"id": i.id, "kind": "item", "title": i.title, "module": i.module, "last_worked": i.updated_at})
+            rows.append({"id": i.id, "kind": "item", "title": i.title, "module": i.module, "last_worked": i.updated_at,
+                         "can_run_again": i.module in RERUNNABLE and bool(i.question)})
     else:
-        statuses = ("In Progress", "Paused", "Failed") if tab == "in_progress" else ("Completed",)
-        q = select(m.Run).where(m.Run.user_id == user.id, m.Run.deleted.is_(False), m.Run.status.in_(statuses))
+        q = select(m.Run).where(m.Run.user_id == user.id, m.Run.deleted.is_(False), m.Run.status.in_(_STATUSES[tab]))
         for r in db.scalars(q):
             rows.append({"id": r.id, "kind": "run", "title": r.title, "module": r.module, "status": r.status,
-                         "step_label": r.step_label, "last_worked": r.updated_at})
+                         "step_label": r.step_label, "last_worked": r.updated_at, "thread_id": r.thread_id,
+                         "progress_pct": progress_pct(r) if tab == "in_progress" else None})
     if module and module != "All":
         rows = [r for r in rows if MODULE_NAMES.get(r["module"]) == module or r["module"] == module]
     rows.sort(key=(lambda r: r["module"]) if sort == "module" else (lambda r: r["last_worked"]), reverse=desc)
     for r in rows:
         r["module_name"] = MODULE_NAMES.get(r["module"], r["module"])
-    return {"tab": tab, "items": rows[:limit]}
+        r.update(badge=meta["badge"], date_label=meta["date_label"], action=meta["action"])
+    return {"tab": tab, "label": meta["label"], "total": len(rows), "items": rows[:limit]}
+
+
+_STATUSES = {"in_progress": ("In Progress", "Paused", "Failed"), "recent_results": ("Completed",)}
+RERUNNABLE = {"ai", "pipeline", "cioa"}
+
+
+@router.get("/home/summary")
+def home_summary(db: DB, user: CurrentUser, preview: int = Query(2, ge=0, le=10)):
+    """Home hero: the three KPI cards (In Progress / Completed / Saved Searches) with counts, plus a short
+    preview list shown before a card is opened (first `preview` in-progress and completed items)."""
+    def count_runs(statuses):
+        return db.scalar(select(func.count(m.Run.id)).where(m.Run.user_id == user.id, m.Run.deleted.is_(False),
+                                                             m.Run.status.in_(statuses))) or 0
+    saved = db.scalar(select(func.count(m.WorkspaceItem.id)).where(m.WorkspaceItem.owner_id == user.id,
+                                                                   m.WorkspaceItem.archived.is_(False))) or 0
+    counts = {"in_progress": count_runs(_STATUSES["in_progress"]), "recent_results": count_runs(_STATUSES["recent_results"]),
+              "saved": saved}
+    cards = [{"key": k, **{x: v[x] for x in ("label", "badge", "date_label", "action")}, "count": counts[k]}
+             for k, v in HOME_CATEGORIES.items()]
+    items = []
+    if preview:
+        for tab in ("in_progress", "recent_results"):
+            items += home(db, user, tab=tab, limit=preview)["items"]
+    return {"greeting": f"What would you like to Ask, {user.name}?", "cards": cards, "preview": items}
 
 
 class RowAction(BaseModel):
@@ -106,6 +140,7 @@ def list_items(db: DB, user: CurrentUser, library: Literal["all", "my", "shared"
                type: str | None = None, module: str | None = None, folder: str | None = None, q: str | None = None,
                sort: Literal["updated", "title"] = "updated", desc: bool = True):
     items = db.scalars(select(m.WorkspaceItem)).all()  # fine at prototype scale; push into SQL + index when large
+    owner_names = {u.id: u.name for u in db.scalars(select(m.User))}
     out = []
     for it in items:
         acc = access_of(it, user)
@@ -117,7 +152,8 @@ def list_items(db: DB, user: CurrentUser, library: Literal["all", "my", "shared"
             continue
         if type and it.item_type != type or module and it.module != module or folder and it.folder != folder:
             continue
-        if q and q.lower() not in f"{it.title} {it.question} {it.item_type}".lower():
+        searchable = f"{it.title} {it.question} {it.item_type} {owner_names.get(it.owner_id, '')}".casefold()
+        if q and q.casefold() not in searchable:
             continue
         out.append(item_out(it, acc, db))
     out.sort(key=lambda x: x["title"].lower() if sort == "title" else x["updated_at"], reverse=desc)
@@ -180,6 +216,24 @@ def duplicate(item_id: int, db: DB, user: m.User = Depends(require("create"))):
     db.add(n)
     db.commit()
     return item_out(n, "Owner", db)
+
+
+@router.post("/workspace/items/{item_id}/rerun", status_code=202)
+def rerun_item(item_id: int, bg: BackgroundTasks, db: DB, user: m.User = Depends(require("execute"))):
+    """Home 'Saved Searches' -> 'Run again': starts a fresh run from the saved question and parameters.
+    The saved snapshot is left untouched; the new run starts its own conversation."""
+    from app.routers.runs import run_out, start_run
+
+    it, _ = get_item(db, item_id, user)
+    if it.module not in RERUNNABLE or not it.question:
+        raise HTTPException(409, "This item cannot be run again; open it instead")
+    p = dict(it.params or {})
+    p["context"] = p.get("context") or user.context
+    run = start_run(db, bg, user, module=it.module, question=it.question, params=p, workflow=p.get("workflow") or "",
+                    mode=p.get("mode") or "Standard")
+    it.updated_at = utc_now()  # "Last Used"
+    db.commit()
+    return run_out(run)
 
 
 @router.post("/workspace/items/{item_id}/versions/{version_id}/restore")

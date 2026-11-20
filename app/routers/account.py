@@ -6,14 +6,15 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
-from app.core.deps import DB, CurrentUser, audit
+from app.core.deps import DB, PERMS, Claims, CurrentUser, audit
 from app.core.security import create_token, verify_password
 from app.db import models as m
+from app.services import catalog
 
 router = APIRouter(tags=["account"])
 
-GEOS = ["United States", "EU5", "Japan", "China", "Global"]
-ALL_INDICATIONS = ["SLE", "RA", "AD", "Lupus Nephritis", "Psoriasis", "Hidradenitis Suppurativa", "Ulcerative Colitis"]
+GEOS = catalog.GEOGRAPHIES
+ALL_INDICATIONS = catalog.ALL_INDICATIONS
 
 
 class LoginIn(BaseModel):
@@ -37,7 +38,7 @@ class PrefsIn(BaseModel):
 
 def user_out(u: m.User) -> dict:
     return {"id": u.id, "name": u.name, "email": u.email, "role": u.role, "groups": u.groups,
-            "context": u.context, "prefs": u.prefs}
+            "permissions": sorted(PERMS.get(u.role, set())), "context": u.context, "prefs": u.prefs}
 
 
 @router.post("/auth/login")
@@ -50,14 +51,56 @@ def login(body: LoginIn, db: DB):
     return {"access_token": create_token(u.id, u.role), "token_type": "bearer", "user": user_out(u)}
 
 
+@router.post("/auth/logout", status_code=204)
+def logout(db: DB, user: CurrentUser, claims: Claims):
+    """Header profile menu -> Logout. Revokes the token used for this call; any later call with it returns 401.
+    Saved searches and Workspace items are untouched. Unsaved-edit warnings are handled by the UI before calling."""
+    now = datetime.now(timezone.utc)
+    # housekeeping: revoked rows are only needed until the token would have expired anyway
+    for old in db.scalars(select(m.RevokedToken).where(m.RevokedToken.expires_at < now)):
+        db.delete(old)
+    if claims.get("jti") and not db.get(m.RevokedToken, claims["jti"]):
+        db.add(m.RevokedToken(jti=claims["jti"], user_id=user.id,
+                              expires_at=datetime.fromtimestamp(claims["exp"], timezone.utc)))
+    db.commit()
+    audit(db, user, "Logged out", "user", user.id)
+
+
 @router.get("/me")
 def me(user: CurrentUser):
     return user_out(user)
 
 
+@router.get("/me/profile")
+def profile(user: CurrentUser):
+    """'My Profile' dialog: identity, role, groups, permissions, active research session and last login."""
+    initials = "".join(w[0] for w in user.name.split()[:2]).upper()
+    return {**user_out(user), "initials": initials, "status": user.status, "last_login": user.last_login,
+            "active_session": (user.context or {}).get("session", "")}
+
+
+class ProfileIn(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+
+
+@router.patch("/me/profile")
+def update_profile(body: ProfileIn, db: DB, user: CurrentUser):
+    """Edit display name. Email, role and groups are managed by administrators."""
+    if not body.name.strip():
+        raise HTTPException(422, "Name cannot be empty")
+    before = {"name": user.name}
+    user.name = body.name.strip()
+    db.commit()
+    audit(db, user, "Updated own profile", "user", user.id, before, {"name": user.name})
+    return profile(user)
+
+
 @router.get("/context/options")
 def context_options(user: CurrentUser):
-    return {"indications": ALL_INDICATIONS, "geographies": GEOS}
+    return {"indications": ALL_INDICATIONS, "indication_groups": catalog.PIPELINE_FILTER_GROUPS["indication"],
+            "indication_names": catalog.INDICATION_FULL_NAMES, "geographies": GEOS,
+            "therapeutic_areas": list(catalog.THERAPEUTIC_AREAS), "molecular_targets": catalog.MOLECULAR_TARGET_GROUPS,
+            "module_names": catalog.MODULE_NAMES}
 
 
 @router.put("/me/context")
@@ -106,16 +149,19 @@ def read_all(db: DB, user: CurrentUser):
 
 
 # ------------------------------------------------------------ help center + AI help chat
-HELP_RULES = [
-    (r"context|target|indication|geograph", "Your research context is in the header chip; select it to change target, mechanism, indications and geography."),
-    (r"save|workspace|folder|share", "Use Save on any result to store it in Workspace; shared items keep their permission (view/edit)."),
-    (r"score|scoring|weight", "Prioritization Scoring: set weights to total 100%, then Apply & Recalculate. Overrides need a justification."),
-]
+HELP_RULES = catalog.HELP_CHAT_RULES
+HELP_SUGGESTIONS = ["Change research context", "Save and share", "Resume work"]
 
 
 @router.get("/help/content")
 def help_content(user: CurrentUser):
-    return {"faq": [], "docs": [], "guides": []}  # TODO: serve from admin-managed content
+    """Help menu: Documentation, User guides, FAQs, and the AI Help Chat quick replies.
+    TODO: move into admin-managed content so it can be edited without a release."""
+    pair = lambda rows, a, b: [{a: x, b: y} for x, y in rows]  # noqa: E731
+    return {"docs": pair(catalog.HELP_DOCS, "module", "description"),
+            "guides": [{"step": i + 1, "title": t, "body": b} for i, (t, b) in enumerate(catalog.HELP_GUIDES)],
+            "faq": pair(catalog.HELP_FAQ, "question", "answer"),
+            "chat_suggestions": HELP_SUGGESTIONS}
 
 
 class HelpChatIn(BaseModel):
@@ -127,4 +173,5 @@ def help_chat(body: HelpChatIn, user: CurrentUser):
     for pat, ans in HELP_RULES:  # replace with an LLM + docs retrieval
         if re.search(pat, body.message, re.I):
             return {"reply": ans}
-    return {"reply": "I can help with context, searching, saving and sharing, history, scoring and pipelines."}
+    return {"reply": "I can help with context, searching, saving and sharing, history, scoring, pipeline views, "
+                     "Competitive Insights workflows and exports. Try one of those, or open Help, then FAQs."}

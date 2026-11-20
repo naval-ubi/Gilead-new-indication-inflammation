@@ -1,16 +1,16 @@
 # Inflammation – New Indication Platform · FastAPI backend
 
-Backend for the attached prototype (`Mon_16_Nov_New_Indication.html`). The prototype keeps all state in
+Backend for the prototype (originally `Mon_16_Nov_New_Indication.html`, updated for `Updated Design Indication.html`). The prototype keeps all state in
 JavaScript arrays and `localStorage`; this project replaces each of those with a real API.
 
 ## 1. What the prototype tells us the backend must do
 
 | UI module | What it really needs from the server |
 |---|---|
-| **Home** | Greeting, ask-box, three tables (In Progress / Recent Results / Saved) with module filter, sort, duplicate, delete |
-| **AI Search** | Async research job (steps + progress), Deep Research mode, source selection, follow-ups, AI prompt suggestion, 5 result tabs, save/share/export |
-| **Drug Pipeline Explorer** | Job + live filtering over an asset catalogue; 5 views (table, swimlane, graph, heatmap, radar) and KPI tiles |
-| **CIOA** | Multi-agent job (one step per capability) producing a sectioned report; approve; export |
+| **Home** | Hero ask-box, three KPI cards (In Progress / Completed / Saved Searches) with counts, card lists with progress %, Resume / View / **Run again** |
+| **AI Scientific Search** | Conversational research: staged loader (sub-items, per-source status, live activity, emerging findings), **Notify me**, **AI Rephrase**, follow-up questions, out-of-scope reply, references + "View Details" |
+| **Drug Pipeline Explorer** | Conversational too: each answer has its own filter bar + 5 views (table, swimlane, graph, heatmap, radar), KPI tiles, grouped filters, **More filters** dialog, AI summary |
+| **Competitive Insights** (module key `cioa`) | Ask + Therapeutic Area / Indication / Molecular Target, choose 1 of 5 **workflows**, report (stats, takeaways, sections), **Change workflow**, full-report PDF export |
 | **Prioritization Scoring** | Criteria + weights (=100%), AI scores, overrides **with justification**, scenarios, sensitivity |
 | **Workspace** | Saved items, folders, sharing (view/edit), versions + restore, notes, archive |
 | **History** | Search history + research activity timeline, KPI tiles, **Resume** failed/paused runs |
@@ -46,18 +46,24 @@ Key decisions
 ## 3. API map (prefix `/api/v1`)
 
 ```
-POST /auth/login            GET /me                 PUT /me/context   PUT /me/preferences
+POST /auth/login            POST /auth/logout       GET /me   GET/PATCH /me/profile
+PUT  /me/context            PUT /me/preferences
 GET  /notifications         POST /notifications/read-all   POST /notifications/{id}/read
 POST /help/chat
 
 GET  /home?tab=in_progress|recent_results|saved&module=&sort=&desc=
 POST /home/runs/{id}        {action: duplicate|delete}
 
-POST /prompts/suggest       GET /prompts/suggested
-POST /runs                  {module: ai|pipeline|cioa, question, deep_research, sources, filters, capabilities}
-GET  /runs/{id}  /result  /events(SSE)      POST /runs/{id}/cancel|pause|resume|rerun|save|approve
-GET  /pipeline/options      GET /pipeline/assets?target=&indication=&modality=&stage=&view=table|swimlane|graph|heatmap|radar
-GET  /cioa/capabilities
+GET  /home/summary          (KPI cards + preview)        POST /workspace/items/{id}/rerun   ("Run again")
+
+POST /prompts/rephrase      {text, module}  ("AI Rephrase")     POST /prompts/suggest (legacy)   GET /prompts/suggested
+POST /runs                  {module: ai|pipeline|cioa, question, deep_research, sources, filters, more_filters,
+                             workflow, therapeutic_area, indication, molecular_target, parent_run_id, notify}
+GET  /runs/{id}  /result  /thread  /events(SSE)  /report (Competitive Insights full report)
+POST /runs/{id}/cancel|pause|resume|rerun|save|approve|notify|change-workflow
+GET  /pipeline/options      GET /pipeline/assets?target=&indication=&modality=&stage=&status=&phase=&view=
+POST /pipeline/assets/query {filters, more_filters, view, sort, desc}
+GET  /cioa/options          GET /cioa/workflows?question=   (5 workflows + recommended)   GET /cioa/capabilities (deprecated)
 
 GET  /workspace/items?library=all|my|shared|archived&type=&module=&q=&sort=
 GET/PATCH/DELETE /workspace/items/{id}      POST .../duplicate  .../share  .../notes  .../versions/{vid}/restore
@@ -76,6 +82,34 @@ GET  /admin/overview  /admin/users  /admin/records/{workflow|template|prompt}  /
 
 Interactive docs: `http://localhost:8000/docs`.
 
+### Changes for the updated design (v0.2)
+
+* **Run payload** (`GET /runs/{id}`) now has `steps[].items[]` (sub-lines of each stage; one item per data source in
+  the search stage, with `active/done/failed` status), `current_activity`, `activity` (live feed), `emerging_findings`
+  (preliminary, labelled Clinical / Preclinical / Genetic / Mechanistic evidence), `elapsed_seconds`, `thread_id`,
+  `notify`, `workflow`, `module_name`. `progress_pct` now counts sub-items.
+* **Results** gain `relevant`, `answer`, `top_sources [{name,url}]`, `references`, `follow_ups`, `research_summary`
+  (stages, sources searched, elapsed). Out-of-scope questions finish quickly with `relevant: false`, a message and
+  suggested questions; the remaining stages are `skipped`. Pipeline results add `summary`, `kpi_tiles`, `more_filters_count`.
+  Competitive Insights results are `{workflow, context, stats, key_takeaways, sections[{title, bullets, table}], data_sources}`.
+* **Threads**: pass `parent_run_id` on a follow-up; `GET /runs/{id}/thread` returns every turn.
+* **Notify me**: `notify` on create or `POST /runs/{id}/notify`; it overrides an "in-app notifications off" preference.
+* **Stages**: `Discovery` replaces `Research`; filters accept `Approved` (= Marketed), `Regulatory review` (= Filed),
+  `On hold` and `Discontinued` (matched on trial activity).
+* **Reference data** moved to `app/services/catalog.py` (workflows, filter groups, help content, module names) and is
+  served by `/cioa/options`, `/cioa/workflows`, `/pipeline/options`, `/context/options`, `/help/content`.
+  Module display names are now "AI Scientific Search" and "Competitive Insights".
+* **Profile & logout**: `GET /me/profile` (My Profile: role, groups, permissions, active session, last login),
+  `PATCH /me/profile {name}`, `POST /auth/logout` (204). Tokens now carry a `jti`; logout stores it in
+  `revoked_tokens` and every authenticated call rejects it with 401. Other sessions of the same user stay signed in.
+  `/me` and the login response now include `permissions`.
+* **Schema**: `revoked_tokens` table; `runs.thread_id`, `runs.notify`, `runs.workflow`. On start-up `add_missing_columns()` adds them to an
+  existing dev database; use Alembic for real deployments. `seed_reference()` idempotently adds the 5 workflows,
+  5 report templates and prompt metadata.
+
+Workspace item search (`q`) is case-insensitive and matches the item title,
+question, type, or owner's name.
+
 ## 4. Run it
 
 ```bash
@@ -93,9 +127,10 @@ Demo logins (password `ChangeMe123!`): `swanik@example.com` (Analyst), `maria.ch
 | Area | State |
 |---|---|
 | Scoring, pipeline aggregations, weights validation, overrides, scenarios, sensitivity | Implemented + unit-tested |
-| Auth (JWT), RBAC, audit, workspace sharing/versions, history, admin CRUD, connector toggle | Implemented |
+| Auth (JWT + logout revocation), profile, RBAC, audit, workspace sharing/versions, history, admin CRUD, connector toggle | Implemented |
 | Run engine (steps, cancel/pause/resume, notifications, SSE) | Implemented |
-| **LLM answers, evidence retrieval, CIOA section content, AI scores, exports (PDF/PPT/Excel)** | **Stubs** – wire `integrations.py`, `orchestrator.build_*`, `scoring.ai_recommend_scores` |
+| **LLM answers, evidence retrieval, Competitive Insights section content, AI scores, exports (PDF/PPT/Excel)** | **Stubs** – wire `integrations.py`, `orchestrator.build_*`, `scoring.ai_recommend_scores`. `/runs/{id}/report` returns render-ready report JSON; PDF rendering is still client-side as in the prototype |
+| AI Rephrase, scope guardrail, follow-up suggestions | Stubs over curated questions (`integrations.rephrase_prompt`, `in_scope`, `suggest_follow_ups`) – replace with LLM calls |
 | Connector clients (PubMed, Citeline, IQVIA …) and secret storage | Stubs – store credentials in a vault, keep only `secret_ref` in DB |
 
 ## 6. Suggested build order

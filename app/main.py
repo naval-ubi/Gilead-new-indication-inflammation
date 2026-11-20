@@ -4,21 +4,23 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
-from app.db.base import Base, SessionLocal, engine
+from app.db.base import Base, SessionLocal, add_missing_columns, engine
 from app.routers import account, admin, runs, scoring, workspace
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     Base.metadata.create_all(engine)  # use Alembic migrations in production instead
+    add_missing_columns(engine)       # dev: upgrade databases created before new columns were added
     if settings.seed_demo_data:
-        from app.seed import seed
+        from app.seed import seed, seed_reference
         with SessionLocal() as db:
             seed(db)
+            seed_reference(db)        # idempotent: reference rows added by later UI versions
     yield
 
 
-app = FastAPI(title="Inflammation - New Indication Platform API", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="Inflammation - New Indication Platform API", version="0.3.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=settings.cors_list, allow_credentials=True,
                    allow_methods=["*"], allow_headers=["*"])
 

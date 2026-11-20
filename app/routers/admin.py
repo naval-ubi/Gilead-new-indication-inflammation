@@ -95,11 +95,24 @@ ADMIN_KINDS = {"workflow": "AI Workflows", "template": "Report Templates", "prom
 
 @router.get("/admin/overview")
 def overview(db: DB, user: m.User = Depends(require("administer"))):
-    counts = {"users": len(db.scalars(select(m.User)).all()), "connectors": len(db.scalars(select(m.Connector)).all()),
-              "scoring": len(db.scalars(select(m.ScoringModel)).all())}
-    for k in ADMIN_KINDS:
-        counts[k] = len(db.scalars(select(m.AdminRecord).where(m.AdminRecord.kind == k)).all())
-    return counts
+    """Admin overview cards. Flat counts kept for v0.1 clients; `sections` adds the 'N live / N enabled' badge."""
+    users = db.scalars(select(m.User)).all()
+    conns = db.scalars(select(m.Connector)).all()
+    models = db.scalars(select(m.ScoringModel)).all()
+    counts = {"users": len(users), "connectors": len(conns), "scoring": len(models)}
+    sections = [
+        {"key": "users", "name": "Users & Groups", "count": len(users), "badge": f"{sum(u.status == 'Active' for u in users)} live"},
+        {"key": "scoring", "name": "Scoring Models", "count": len(models),
+         "badge": f"{sum(x.status == 'Published' for x in models)} live"},
+        {"key": "connectors", "name": "Data Connectors", "count": len(conns), "badge": f"{sum(c.enabled for c in conns)} enabled"},
+    ]
+    for k, name in ADMIN_KINDS.items():
+        rows = db.scalars(select(m.AdminRecord).where(m.AdminRecord.kind == k)).all()
+        counts[k] = len(rows)
+        sections.append({"key": k, "name": name, "count": len(rows), "badge": f"{sum(r.status == 'Published' for r in rows)} live"})
+    order = ["users", "workflow", "scoring", "template", "connectors", "prompt"]  # same order as the Admin tabs
+    sections.sort(key=lambda x: order.index(x["key"]))
+    return {**counts, "sections": sections}
 
 
 # ---- users
