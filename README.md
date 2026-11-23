@@ -37,7 +37,7 @@ Admin and connector settings), `sam.patel@example.com` (Reviewer).
 * **CORS:** `http://localhost:5173` and `http://localhost:3000` are allowed. If your dev server uses another port,
   add it to `CORS_ORIGINS` in `.env` (comma-separated) and restart.
 * **Sample data:** with `SEED_SAMPLE_DATA=true` (already set in `.env.example`) the first start fills every screen
-  for `swanik@example.com`: completed, paused and failed runs; conversations with follow-ups; a report with a changed
+  for `swanik@example.com`: completed, in-progress, paused and failed runs; conversations with follow-ups; a report with a changed
   workflow; saved, shared, archived and versioned workspace items with notes; an assessment with overrides and
   scenarios; read and unread notifications; History entries spread over six weeks. Already set up without it? Run
   `python -m app.seed_samples` once. Answer and report text is clearly labelled sample content; links in references
@@ -47,7 +47,8 @@ Admin and connector settings), `sam.patel@example.com` (Reviewer).
   automatically on start.
 * **Placeholder content:** research answers, report text and AI Rephrase return placeholder text until the real AI
   and data sources are connected. Build against the response *structure* (field names and types), not the wording.
-* **Run progress:** prefer polling `GET /runs/{id}` (about once a second). `GET /runs/{id}/events` (live stream)
+* **Run progress:** prefer polling `GET /runs/{id}` (about once a second). Stop polling when `stalled` is true (an
+  "In Progress" run with no progress for 15 minutes, e.g. after a server restart) and offer Resume. `GET /runs/{id}/events` (live stream)
   works locally but may not be available in every cloud deployment.
 * **Auth:** send `Authorization: Bearer <token>` on every call. A 401 means the token expired or the user logged out:
   send them back to sign-in.

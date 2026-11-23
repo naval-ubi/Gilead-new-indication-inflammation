@@ -118,7 +118,8 @@ story = [
                       "on create. A bell notification is created on completion even if in-app notifications are off."),
     ]),
     Spacer(1, 4),
-    callout("<b>Status &#8594; UI.</b> In Progress = loader · Paused/Failed = Resume button (History, Home) · Completed = result · "
+    callout("<b>Status &#8594; UI.</b> In Progress = loader, unless <font name='Courier'>stalled</font> is true (no progress for 15 min, "
+            "e.g. after a server restart): stop polling and show Resume · Paused/Failed = Resume button (History, Home) · Completed = result · "
             "Cancelled = show the previous turn. Step status: pending / active / done / failed / skipped (skipped = out-of-scope question). "
             "Source items in the search stage map to “Queued / Searching… / Searched”."),
     PageBreak(),
@@ -147,7 +148,8 @@ story += section("4. Home", "Hero ask box, three KPI cards, and the card list fo
      "<font name='Courier'>cards[]</font>: key, label, badge, date_label, action, count. "
      "<font name='Courier'>preview[]</font> = items shown before a card is opened."),
     ("Card list after clicking a KPI", [("GET", "/home?tab=in_progress|recent_results|saved")],
-     "Rows: title, module_name, last_worked, badge, date_label, <font name='Courier'>progress_pct</font> (in progress only), action."),
+     "Rows: title, module_name, last_worked, badge, date_label, <font name='Courier'>progress_pct</font> (in progress only), action, "
+     "stalled, resumable (runs) or can_run_again (saved items)."),
     ("Card arrow: Resume / View result", [("GET", "/runs/{id}/thread")], "Open the module screen with the run's thread (kind = run)."),
     ("Card arrow: Run again (Saved)", [("POST", "/workspace/items/{id}/rerun")], "202 with a new run &#8594; open AI/Pipeline/CI loader."),
     ("Card more-actions menu: Duplicate / Delete", [("POST", "/home/runs/{id}")], "{action: duplicate | delete} for runs; for saved items use the Workspace endpoints."),

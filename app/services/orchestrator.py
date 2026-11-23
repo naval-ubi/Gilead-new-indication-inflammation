@@ -15,7 +15,7 @@ Execution uses FastAPI BackgroundTasks (in-process). For production move `execut
 from __future__ import annotations
 
 import traceback
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 
@@ -128,11 +128,25 @@ def _thread_questions(db, run: m.Run) -> list[str]:
     return [r.question for r in rows]
 
 
+# An "In Progress" run whose state has not changed for this long has no worker behind it any more (e.g. the server
+# restarted mid-run). It is reported as stalled and can be resumed. The engine saves progress after every sub-item,
+# so a healthy run never stays silent this long.
+STALL_AFTER = timedelta(minutes=15)
+
+
+def _aware(d):
+    return d if d is None or d.tzinfo else d.replace(tzinfo=timezone.utc)
+
+
+def is_stalled(run: m.Run) -> bool:
+    return run.status == "In Progress" and run.updated_at is not None and \
+        datetime.now(timezone.utc) - _aware(run.updated_at) > STALL_AFTER
+
+
 def elapsed_seconds(run: m.Run) -> int:
-    def aware(d):
-        return d if d is None or d.tzinfo else d.replace(tzinfo=timezone.utc)
-    start = aware(run.created_at)
-    end = aware(run.updated_at) if run.status in ("Completed", "Failed", "Cancelled") else datetime.now(timezone.utc)
+    start = _aware(run.created_at)
+    stopped = run.status in ("Completed", "Failed", "Cancelled", "Paused") or is_stalled(run)
+    end = _aware(run.updated_at) if stopped else datetime.now(timezone.utc)
     return max(0, int(((end or start) - start).total_seconds())) if start else 0
 
 

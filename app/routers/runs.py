@@ -24,8 +24,8 @@ from app.db.base import SessionLocal
 from app.services import catalog
 from app.services import pipeline as pl
 from app.services.integrations import improve_prompt, rephrase_prompt, words
-from app.services.orchestrator import (CAPABILITIES, elapsed_seconds, execute_run, pipeline_views, plan_steps,
-                                       query_assets, resolve_sources)
+from app.services.orchestrator import (CAPABILITIES, elapsed_seconds, execute_run, is_stalled, pipeline_views,
+                                       plan_steps, query_assets, resolve_sources)
 
 router = APIRouter(tags=["research"])
 
@@ -76,6 +76,8 @@ def run_out(r: m.Run, full: bool = False) -> dict:
          "activity": work.get("activity", [])[-6:],                 # "Live activity" panel
          "emerging_findings": work.get("findings", []),             # "Emerging findings" (preliminary)
          "elapsed_seconds": elapsed_seconds(r), "thread_id": r.thread_id, "parent_run_id": r.parent_run_id,
+         "stalled": is_stalled(r),                                  # In Progress but no worker: offer Resume
+         "resumable": r.status in ("Paused", "Failed") or is_stalled(r),
          "notify": r.notify, "workflow": {"key": wf["key"], "name": wf["name"], "short": wf["short"]} if wf else None,
          "error": r.error, "saved": r.saved, "approved": r.approved, "source_count": r.source_count,
          "params": r.params, "created_at": r.created_at, "updated_at": r.updated_at}
@@ -199,8 +201,8 @@ async def stream(run_id: int, user: CurrentUser):
             if key != last:
                 last = key
                 yield f"data: {json.dumps(snap, default=str)}\n\n"
-            if snap["status"] in ("Completed", "Failed", "Cancelled", "Paused"):
-                return
+            if snap["status"] in ("Completed", "Failed", "Cancelled", "Paused") or snap["stalled"]:
+                return  # stalled: nothing more will happen until the user resumes
             await asyncio.sleep(0.7)
     return StreamingResponse(gen(), media_type="text/event-stream")
 
@@ -226,7 +228,7 @@ def pause(run_id: int, db: DB, user: CurrentUser):
 @router.post("/runs/{run_id}/resume", status_code=202)
 def resume(run_id: int, bg: BackgroundTasks, db: DB, user: m.User = Depends(require("execute"))):
     r = own_run(db, run_id, user)
-    if r.status not in ("Paused", "Failed"):
+    if not (r.status in ("Paused", "Failed") or is_stalled(r)):
         raise HTTPException(409, f"Cannot resume a run that is {r.status}")
     r.status = "In Progress"
     db.commit()

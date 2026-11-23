@@ -9,6 +9,7 @@ from sqlalchemy import func, or_, select
 from app.core.deps import DB, CurrentUser, audit, require
 from app.db import models as m
 from app.services.catalog import MODULE_NAMES
+from app.services.orchestrator import is_stalled
 
 router = APIRouter(tags=["workspace"])
 HOME_CATEGORIES = {  # Home KPI cards -> card list. label/date_label/action are what each card shows.
@@ -41,7 +42,8 @@ def home(db: DB, user: CurrentUser, tab: Literal["in_progress", "recent_results"
         for r in db.scalars(q):
             rows.append({"id": r.id, "kind": "run", "title": r.title, "module": r.module, "status": r.status,
                          "step_label": r.step_label, "last_worked": r.updated_at, "thread_id": r.thread_id,
-                         "progress_pct": progress_pct(r) if tab == "in_progress" else None})
+                         "progress_pct": progress_pct(r) if tab == "in_progress" else None,
+                         "stalled": is_stalled(r), "resumable": r.status in ("Paused", "Failed") or is_stalled(r)})
     if module and module != "All":
         rows = [r for r in rows if MODULE_NAMES.get(r["module"]) == module or r["module"] == module]
     rows.sort(key=(lambda r: r["module"]) if sort == "module" else (lambda r: r["last_worked"]), reverse=desc)
@@ -363,7 +365,7 @@ def history_activity(db: DB, user: CurrentUser, q: str | None = None, range: str
         stmt = stmt.where(or_(m.Run.title.ilike(f"%{q}%"), m.Run.step_label.ilike(f"%{q}%")))
     rows = db.scalars(stmt.order_by(m.Run.created_at.desc())).all()
     return [{"id": r.id, "kind": r.kind, "title": r.title, "module": r.module, "project": r.project, "status": r.status,
-             "step_label": r.step_label, "resumable": r.status in ("In Progress", "Paused", "Failed"),
+             "step_label": r.step_label, "resumable": r.status in ("Paused", "Failed") or is_stalled(r), "stalled": is_stalled(r),
              "has_result": r.status == "Completed", "created_at": r.created_at} for r in rows]
 
 

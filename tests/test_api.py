@@ -272,3 +272,42 @@ def test_history_summary_and_utc_timestamps(client):
     assert s.status_code == 200 and s.json()["searches_this_week"] >= 1
     ts = client.get("/api/v1/history/searches", headers=h).json()[0]["created_at"]
     assert ts.endswith("+00:00") or ts.endswith("Z")
+
+
+def test_stalled_in_progress_run_can_be_resumed(client):
+    from datetime import datetime, timedelta, timezone
+
+    from app.db import models as m
+    from app.db.base import SessionLocal
+
+    h = auth(client)
+    rid = run(client, h, module="ai", question="IRAK4 stalled run check")["id"]
+    with SessionLocal() as db:                       # simulate a server restart mid-run
+        r = db.get(m.Run, rid)
+        r.status, r.step_index = "In Progress", 2
+        r.updated_at = datetime.now(timezone.utc) - timedelta(minutes=5)
+        db.commit()
+    assert client.get(f"/api/v1/runs/{rid}", headers=h).json()["stalled"] is False
+    assert client.post(f"/api/v1/runs/{rid}/resume", headers=h).status_code == 409   # may still be running
+    with SessionLocal() as db:
+        db.get(m.Run, rid).updated_at = datetime.now(timezone.utc) - timedelta(minutes=20)
+        db.commit()
+    d = client.get(f"/api/v1/runs/{rid}", headers=h).json()
+    assert d["stalled"] and d["resumable"]
+    assert client.post(f"/api/v1/runs/{rid}/resume", headers=h).status_code == 202
+    assert client.get(f"/api/v1/runs/{rid}", headers=h).json()["status"] == "Completed"
+
+
+def test_sample_data_fills_home(client):
+    """Runs last in this module: it adds sample records to the shared test database."""
+    from app.db.base import SessionLocal
+    from app.seed_samples import seed_samples
+
+    with SessionLocal() as db:
+        assert seed_samples(db) is True
+        assert seed_samples(db) is False                 # idempotent
+    h = auth(client)
+    cards = {c["key"]: c["count"] for c in client.get("/api/v1/home/summary", headers=h).json()["cards"]}
+    assert cards["in_progress"] >= 6 and cards["saved"] >= 10 and cards["recent_results"] >= 14
+    statuses = {r["status"] for r in client.get("/api/v1/home", headers=h, params={"tab": "in_progress"}).json()["items"]}
+    assert statuses == {"In Progress", "Paused", "Failed"}
