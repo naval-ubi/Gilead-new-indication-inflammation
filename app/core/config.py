@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     jwt_expire_minutes: int = 480
     cors_origins: str = "http://localhost:5173,http://localhost:3000"
     seed_demo_data: bool = True
+    seed_sample_data: bool = False   # frontend testing: runs, saved items, sharing, scoring (app/seed_samples.py)
 
     @property
     def cors_list(self) -> list[str]:

@@ -19,8 +19,9 @@ class LLMClient(Protocol):
 
 
 class StubLLM:
+    """Offline placeholder. Returns clearly labelled sample text so screens can be built and tested."""
     def complete(self, system: str, prompt: str, max_tokens: int = 1000) -> str:
-        return f"[stub-llm] {prompt[:200]}"
+        return f"Sample text for: {prompt[:160]}"
 
 
 _llm: LLMClient = StubLLM()
@@ -33,6 +34,52 @@ def get_llm() -> LLMClient:
 def set_llm(client: LLMClient) -> None:  # call from main.py once a real client is configured
     global _llm
     _llm = client
+
+
+def using_stub_llm() -> bool:
+    return isinstance(_llm, StubLLM)
+
+
+SAMPLE_NOTE = "_Sample content for testing. Not real evidence._"
+
+
+def sample_answer(question: str, context: dict, refs: list[dict]) -> str:
+    """Placeholder AI answer with the structure real answers will have: summary, headed sections, citation markers
+    [n] that point into `references`, a Markdown table and a gaps list. Used only while no real LLM is configured."""
+    inds = context.get("indications") or ["SLE", "RA", "AD"]
+    target = context.get("target", "IRAK4")
+    n = max(1, len(refs))
+    c = lambda i: f"[{(i % n) + 1}]"  # noqa: E731  citation marker into references
+    rows = "\n".join(f"| {ind} | {lvl} | {conf} |" for ind, lvl, conf in
+                      zip(inds, ["Strong preclinical and early clinical", "Mixed clinical", "Early clinical"] * 3,
+                          ["Medium", "Low", "Medium"] * 3))
+    return f"""{SAMPLE_NOTE}
+
+**Summary.** This sample answer responds to: "{question.strip()}". {target} sits at the centre of TLR and IL-1 receptor
+signalling, which is active in {", ".join(inds)} {c(0)}. The strength of evidence differs by indication {c(1)}.
+
+## Key points
+- {target} transmits signals from TLR7/9 and IL-1 family receptors, a pathway linked to type I interferon {c(0)}.
+- Preclinical models show reduced inflammation when {target} activity is blocked {c(2)}.
+- Clinical data are early; most programmes are in Phase 1 or Phase 2 {c(3)}.
+
+## Evidence by indication
+| Indication | Evidence | Confidence |
+|---|---|---|
+{rows}
+
+## Gaps and uncertainties
+1. No head-to-head comparison with approved therapies {c(1)}.
+2. Long-term safety data are limited {c(4)}.
+"""
+
+
+def sample_bullets(topic: str, question: str, k: int = 3) -> list[str]:
+    base = [f"{topic}: sample finding relevant to the question \"{question[:80]}\".",
+            "Sample point describing a trend across indications, with the confidence it deserves.",
+            "Sample point noting a gap in the evidence and what would close it.",
+            "Sample point on implications for positioning and next steps."]
+    return base[:k]
 
 
 def words(text: str) -> int:
@@ -130,14 +177,37 @@ class BaseConnector:
         return True, "ok"
 
 
+SEARCH_URLS = {  # public search pages, so sample references have working links (None tests the no-link case)
+    "PubMed": "https://pubmed.ncbi.nlm.nih.gov/?term={q}", "PubMed Central (PMC)": "https://www.ncbi.nlm.nih.gov/pmc/?term={q}",
+    "ClinicalTrials.gov": "https://clinicaltrials.gov/search?term={q}", "Europe PMC": "https://europepmc.org/search?query={q}",
+    "Open Targets Platform": "https://platform.opentargets.org/search?q={q}", "EMA Medicines": "https://www.ema.europa.eu/en/search?search_api_fulltext={q}",
+}
+SAMPLE_RECORDS = [  # (title, snippet) - snippets carry words that map to the different evidence types
+    ("{t} signalling in {i}: review of mechanism", "Mechanistic review of {t} in TLR and IL-1 receptor signalling and cytokine release."),
+    ("{t} inhibition in a {i} mouse model", "Preclinical study in mice showing reduced inflammation and autoantibodies after {t} blockade."),
+    ("Phase 2 trial of an oral {t} inhibitor in {i}", "Randomised clinical trial in patients; primary endpoint met at week 12 in a subgroup."),
+    ("Genetic variants in the {t} pathway and {i} risk", "Human genetics study linking pathway variants to disease susceptibility."),
+]
+
+
 class StubConnector(BaseConnector):
     def __init__(self, name: str):
         self.name = name
 
     def search(self, question: str, context: dict) -> list[dict]:
-        t = context.get("target", "the target")
-        return [{"source": self.name, "kind": "evidence", "title": f"{t}: evidence record from {self.name}",
-                 "url": None, "snippet": "Illustrative record - replace StubConnector with a real client."}]
+        from urllib.parse import quote_plus
+        t = context.get("target", "IRAK4")
+        inds = context.get("indications") or ["SLE"]
+        start = sum(map(ord, self.name)) % len(SAMPLE_RECORDS)   # different sources return different record types
+        url = SEARCH_URLS.get(self.name)
+        out = []
+        for k in range(2):
+            title, snippet = SAMPLE_RECORDS[(start + k) % len(SAMPLE_RECORDS)]
+            ind = inds[(start + k) % len(inds)]
+            out.append({"source": self.name, "kind": "evidence", "title": title.format(t=t, i=ind) + " (sample)",
+                        "url": url.format(q=quote_plus(f"{t} {ind}")) if url else None,
+                        "snippet": snippet.format(t=t)})
+        return out
 
 
 _REGISTRY: dict[str, BaseConnector] = {}

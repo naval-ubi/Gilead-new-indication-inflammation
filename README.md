@@ -36,17 +36,13 @@ Admin and connector settings), `sam.patel@example.com` (Reviewer).
 
 * **CORS:** `http://localhost:5173` and `http://localhost:3000` are allowed. If your dev server uses another port,
   add it to `CORS_ORIGINS` in `.env` (comma-separated) and restart.
-* **Empty screens at first:** Home, History and Workspace fill up as you use the app. To create sample data quickly,
-  start a few research runs (they complete in about a second locally):
-  ```bash
-  TOKEN=$(curl -s -X POST localhost:8000/api/v1/auth/login -H 'Content-Type: application/json' \
-    -d '{"email":"swanik@example.com","password":"ChangeMe123!"}' | python3 -c "import sys,json;print(json.load(sys.stdin)['access_token'])")
-  curl -s -X POST localhost:8000/api/v1/runs -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-    -d '{"module":"ai","question":"What role does IRAK4 play in SLE?"}'
-  curl -s -X POST localhost:8000/api/v1/runs -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-    -d '{"module":"cioa","question":"Map IRAK4 competitors in SLE","workflow":"competitive"}'
-  ```
-* **Start over:** stop the server, delete `gilead.db`, start again. It is recreated with demo data.
+* **Sample data:** with `SEED_SAMPLE_DATA=true` (already set in `.env.example`) the first start fills every screen
+  for `swanik@example.com`: completed, paused and failed runs; conversations with follow-ups; a report with a changed
+  workflow; saved, shared, archived and versioned workspace items with notes; an assessment with overrides and
+  scenarios; read and unread notifications; History entries spread over six weeks. Already set up without it? Run
+  `python -m app.seed_samples` once. Answer and report text is clearly labelled sample content; links in references
+  point to public search pages, and some references deliberately have no link.
+* **Start over:** stop the server, delete `gilead.db`, start again. It is recreated with demo and sample data.
 * **Get the latest API:** `git pull`, then `pip install -r requirements.txt` and restart. Your database is upgraded
   automatically on start.
 * **Placeholder content:** research answers, report text and AI Rephrase return placeholder text until the real AI

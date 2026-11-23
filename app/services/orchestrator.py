@@ -23,7 +23,8 @@ from app.db import models as m
 from app.db.base import SessionLocal
 from app.services import catalog
 from app.services import pipeline as pl
-from app.services.integrations import fan_out, get_llm, in_scope, suggest_follow_ups
+from app.services.integrations import (SAMPLE_NOTE, fan_out, get_llm, in_scope, sample_answer, sample_bullets,
+                                       suggest_follow_ups, using_stub_llm)
 
 # Legacy CIOA capability list (GET /cioa/capabilities) = subcategories of the default workflow.
 CAPABILITIES = [(n, "") for n in catalog.WORKFLOWS[0]["subcategories"]]
@@ -261,8 +262,8 @@ def build_ai_result(db, run: m.Run, work: dict) -> dict:
     target = ctx.get("target", "IRAK4")
     records = work.get("records", [])
     refs, top = _references(records)
-    answer = get_llm().complete("You are a pharma research analyst. Answer with headed paragraphs and cite each claim.",
-                                run.question)
+    answer = sample_answer(run.question, ctx, refs) if using_stub_llm() else get_llm().complete(
+        "You are a pharma research analyst. Answer with headed paragraphs and cite each claim as [n].", run.question)
     return {
         "relevant": True,
         "answer": answer,                 # markdown/HTML body rendered in the conversation
@@ -298,7 +299,15 @@ def build_pipeline_result(db, run: m.Run, work: dict | None = None) -> dict:
     assets = query_assets(db, f, more)
     inds = [f["indication"]] if f.get("indication") else run.params.get("context", {}).get("indications") or ["SLE", "RA", "AD"]
     refs, top = _references((work or {}).get("records", []))
-    summary = get_llm().complete("You are a drug pipeline analyst. Summarise the programs and cite sources.", run.question)
+    if using_stub_llm():
+        k = pl.kpis(assets)
+        lead = sorted(assets, key=lambda a: pl.STAGE_ORDER.get(a["stage"], 0), reverse=True)[:3]
+        summary = (f"{SAMPLE_NOTE}\n\n**{len(assets)} programs** across {k['indications']} indications from {k['sponsors']} "
+                   f"sponsors; {k['clinical_stage_programs']} are in clinical development or later.\n\n"
+                   "## Most advanced programs\n" + "\n".join(
+                       f"- **{a['name']}** ({a['sponsor']}): {a['target']}, {a['stage']} in {a['indication']}" for a in lead))
+    else:
+        summary = get_llm().complete("You are a drug pipeline analyst. Summarise the programs and cite sources.", run.question)
     return {"relevant": True, "summary": summary, "answer_format": "markdown",
             "filters": f, "more_filters": more, "more_filters_count": catalog.more_filters_count(more),
             **pipeline_views(assets, inds), "top_sources": top, "references": refs,
@@ -319,17 +328,29 @@ def build_cioa_result(db, run: m.Run, work: dict) -> dict:
         {"value": sum(1 for a in assets if a.get("activity") in pl.LIVE), "label": "Active in the clinic", "icon": "pulse"},
         {"value": len({a["sponsor"] for a in assets}), "label": "Sponsors", "icon": "users"},
     ]
-    sections = [{"index": i, "title": t,
-                 "bullets": [llm.complete(f"You are writing the '{t}' section of a {w['name']} report. Be concise; cite sources.",
-                                          run.question)],
-                 "table": None} for i, t in enumerate(w["sections"])]
+    asset_table = {"headers": ["Company", "Asset", "Mechanism", "Modality", "Phase", "Indication", "Status"],
+                   "rows": [[a["sponsor"], a["name"], a["target"], a["modality"], a["stage"], a["indication"], a["activity"]]
+                            for a in sorted(assets, key=lambda a: -pl.STAGE_ORDER.get(a["stage"], 0))]}
+
+    def section(i: int, t: str) -> dict:
+        if using_stub_llm():
+            bullets = sample_bullets(t, run.question)
+        else:
+            bullets = [llm.complete(f"You are writing the '{t}' section of a {w['name']} report. Be concise; cite sources.",
+                                    run.question)]
+        # sections about programs / the landscape carry the asset table (real pipeline data)
+        table = asset_table if any(k in t for k in ("Pipeline", "Landscape", "Peer Set")) and assets else None
+        return {"index": i, "title": t, "bullets": bullets, "table": table}
+
+    sections = [section(i, t) for i, t in enumerate(w["sections"])]
     return {
         "relevant": True,
         "workflow": {"key": w["key"], "name": w["name"], "short": w["short"], "icon": w["icon"]},
         "context": {"therapeutic_area": p.get("therapeutic_area") or catalog.DEFAULT_THERAPEUTIC_AREA,
                     "indications": inds, "molecular_target": mt},
         "stats": stats,
-        "key_takeaways": [llm.complete(f"Key takeaways of a {w['name']} report", run.question)],
+        "key_takeaways": sample_bullets("Key takeaway", run.question, 3) if using_stub_llm()
+        else [llm.complete(f"Key takeaways of a {w['name']} report", run.question)],
         "sections": sections,
         "data_sources": w["sources"],
         "illustrative": True,

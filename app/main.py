@@ -17,6 +17,9 @@ async def lifespan(app: FastAPI):
         with SessionLocal() as db:
             seed(db)
             seed_reference(db)        # idempotent: reference rows added by later UI versions
+            if settings.seed_sample_data:
+                from app.seed_samples import seed_samples
+                seed_samples(db)      # idempotent: sample activity for frontend testing
     yield
 
 

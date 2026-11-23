@@ -262,3 +262,13 @@ def test_pipeline_options_from_lookups(client):
     assert "Sponsor 3" in o["sponsors"] and o["indications"] == ["AD", "RA", "SLE"]
     rows = client.get("/api/v1/pipeline/assets", headers=auth(client), params={"indication": "SLE"}).json()["data"]
     assert {"asset_id", "name", "sponsor", "modality", "target", "indication", "stage"} <= set(rows[0])
+
+
+def test_history_summary_and_utc_timestamps(client):
+    """SQLite drops time zones: summary must not crash once runs exist, and API dates must carry an offset."""
+    h = auth(client)
+    run(client, h, module="ai", question="IRAK4 timestamp regression")
+    s = client.get("/api/v1/history/summary", headers=h)
+    assert s.status_code == 200 and s.json()["searches_this_week"] >= 1
+    ts = client.get("/api/v1/history/searches", headers=h).json()[0]["created_at"]
+    assert ts.endswith("+00:00") or ts.endswith("Z")

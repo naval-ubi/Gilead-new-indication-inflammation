@@ -4,6 +4,7 @@ column or its own table (roles, permissions, groups, pipeline lookups, scoring o
 from datetime import datetime, timezone
 
 from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy.types import TypeDecorator
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -11,6 +12,23 @@ from app.db.base import Base
 
 def now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+class UTCDateTime(TypeDecorator):
+    """Timestamps are always UTC and always time-zone aware in Python and in API responses.
+    PostgreSQL keeps the zone itself; SQLite does not, so values are normalised on the way in and out."""
+    impl = DateTime(timezone=True)
+    cache_ok = True
+
+    def process_bind_param(self, value, dialect):
+        if value is not None:
+            value = value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+        return value
+
+    def process_result_value(self, value, dialect):
+        if value is not None and value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value
 
 
 def default_context() -> dict:
@@ -71,7 +89,7 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(String(300), default="")
     role_id: Mapped[int] = mapped_column(ForeignKey("roles.id"), index=True)
     status: Mapped[str] = mapped_column(String(20), default="Active")
-    last_login: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_login: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     context: Mapped[dict] = mapped_column(JSON, default=default_context)  # header "Research context" chip
     prefs: Mapped[dict] = mapped_column(JSON, default=default_prefs)      # Preferences dialog
     role: Mapped["Role"] = relationship(lazy="joined")
@@ -113,8 +131,8 @@ class Run(Base):
     thread_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     notify: Mapped[bool] = mapped_column(Boolean, default=False)       # "Notify me when ready"
     workflow: Mapped[str] = mapped_column(String(40), default="")     # Competitive Insights workflow key
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, index=True)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=now, index=True)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=now, onupdate=now)
     deleted: Mapped[bool] = mapped_column(Boolean, default=False)  # "Clear history" is a soft delete
 
 
@@ -134,8 +152,8 @@ class WorkspaceItem(Base):
     source_count: Mapped[int] = mapped_column(Integer, default=0)
     archived: Mapped[bool] = mapped_column(Boolean, default=False)
     run_id: Mapped[int | None] = mapped_column(ForeignKey("runs.id"), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now, index=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=now)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=now, onupdate=now, index=True)
     versions: Mapped[list["ItemVersion"]] = relationship(cascade="all, delete-orphan", order_by="ItemVersion.id.desc()")
     shares: Mapped[list["ItemShare"]] = relationship(cascade="all, delete-orphan")
     notes: Mapped[list["ItemNote"]] = relationship(cascade="all, delete-orphan", order_by="ItemNote.id")
@@ -148,7 +166,7 @@ class ItemVersion(Base):
     label: Mapped[str] = mapped_column(String(20))
     note: Mapped[str] = mapped_column(String(300), default="")
     snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=now)
 
 
 class ItemShare(Base):
@@ -167,7 +185,7 @@ class ItemNote(Base):
     item_id: Mapped[int] = mapped_column(ForeignKey("workspace_items.id"), index=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
     text: Mapped[str] = mapped_column(Text)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=now)
 
 
 # ------------------------------------------------------------------ pipeline catalogue
@@ -222,7 +240,7 @@ class PipelineProgram(Base):
     activity: Mapped[str] = mapped_column(String(30), default="—")  # Recruiting|Active|Completed|Terminated|—
     geography: Mapped[str] = mapped_column(String(30), default="US")
     source: Mapped[str] = mapped_column(String(60), default="Citeline Pharmaprojects")
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=now, onupdate=now)
     asset: Mapped["DrugAsset"] = relationship(lazy="joined")
     indication: Mapped["Indication"] = relationship(lazy="joined")
 
@@ -256,8 +274,8 @@ class Assessment(Base):
     weights: Mapped[dict] = mapped_column(JSON, default=dict)    # {criterion_key: percent}
     ai_scores: Mapped[dict] = mapped_column(JSON, default=dict)  # {indication: {criterion_key: 1..5 | null}}
     status: Mapped[str] = mapped_column(String(20), default="Draft")
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=now)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=now, onupdate=now)
     scenarios: Mapped[list["Scenario"]] = relationship(cascade="all, delete-orphan")
     override_rows: Mapped[list["AssessmentOverride"]] = relationship(cascade="all, delete-orphan", lazy="selectin",
                                                                      order_by="AssessmentOverride.id")
@@ -284,7 +302,7 @@ class AssessmentOverride(Base):
     score: Mapped[int | None] = mapped_column(Integer, nullable=True)  # null = marked as Missing
     justification: Mapped[str] = mapped_column(Text)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=now)
 
 
 class Scenario(Base):
@@ -295,7 +313,7 @@ class Scenario(Base):
     weights: Mapped[dict] = mapped_column(JSON)
     overrides: Mapped[dict] = mapped_column(JSON, default=dict)  # snapshot of the overrides at save time
     ranking: Mapped[list] = mapped_column(JSON, default=list)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=now)
 
 
 class Connector(Base):
@@ -307,7 +325,7 @@ class Connector(Base):
     enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     health: Mapped[str] = mapped_column(String(20), default="Healthy")  # Healthy|Warning|Failed
     license: Mapped[str] = mapped_column(String(20), default="Open")    # Open|Licensed
-    last_sync: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_sync: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     config: Mapped[dict] = mapped_column(JSON, default=dict)            # non-secret config only
     secret_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)  # pointer into a vault
 
@@ -321,7 +339,7 @@ class AdminRecord(Base):
     status: Mapped[str] = mapped_column(String(20), default="Draft")
     version: Mapped[str] = mapped_column(String(20), default="v1")
     data: Mapped[dict] = mapped_column(JSON, default=dict)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=now, onupdate=now)
 
 
 class Notification(Base):
@@ -332,7 +350,7 @@ class Notification(Base):
     body: Mapped[str] = mapped_column(String(500))
     route: Mapped[str] = mapped_column(String(40), default="home")
     unread: Mapped[bool] = mapped_column(Boolean, default=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, index=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=now, index=True)
 
 
 class AuditLog(Base):
@@ -344,7 +362,7 @@ class AuditLog(Base):
     entity_id: Mapped[str] = mapped_column(String(40), default="")
     before: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     after: Mapped[dict | None] = mapped_column(JSON, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, index=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=now, index=True)
 
 
 class RevokedToken(Base):
@@ -352,5 +370,5 @@ class RevokedToken(Base):
     __tablename__ = "revoked_tokens"
     jti: Mapped[str] = mapped_column(String(64), primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
-    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
-    revoked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    expires_at: Mapped[datetime] = mapped_column(UTCDateTime(), index=True)
+    revoked_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=now)
