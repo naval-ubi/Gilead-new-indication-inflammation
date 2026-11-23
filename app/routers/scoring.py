@@ -26,7 +26,7 @@ def ai_recommend_scores(target: str, indication: str, criteria: list[dict]) -> d
 
 def load(db, aid: int, user: m.User, need_owner: bool = False) -> m.Assessment:
     a = db.get(m.Assessment, aid)
-    if not a or (a.owner_id != user.id and user.role != "Admin"):
+    if not a or (a.owner_id != user.id and "administer" not in user.permission_codes):
         raise HTTPException(404, "Assessment not found")
     return a
 
@@ -69,7 +69,7 @@ def create_assessment(body: NewAssessment, db: DB, user: m.User = Depends(requir
     a = m.Assessment(owner_id=user.id, model_id=model.id, title=body.title or f"{ctx['target']} {model.name}",
                      target=ctx["target"], indications=ctx["indications"], criteria=crit,
                      weights={c["key"]: c.get("weight", 0) for c in crit},
-                     ai_scores={i: ai_recommend_scores(ctx["target"], i, crit) for i in ctx["indications"]}, overrides={})
+                     ai_scores={i: ai_recommend_scores(ctx["target"], i, crit) for i in ctx["indications"]})
     db.add(a)
     db.commit()
     return view(a)
@@ -140,7 +140,7 @@ def remove_criterion(aid: int, key: str, db: DB, user: m.User = Depends(require(
     a.criteria = [c for c in a.criteria if c["key"] != key]
     a.weights = {k: v for k, v in a.weights.items() if k != key}
     a.ai_scores = {i: {k: v for k, v in s.items() if k != key} for i, s in a.ai_scores.items()}
-    a.overrides = {}  # prototype behaviour: removing a criterion clears overrides
+    a.override_rows.clear()  # prototype behaviour: removing a criterion clears overrides
     db.commit()
     return view(a)  # weight_errors tells the UI to rebalance
 
@@ -152,7 +152,7 @@ def reset(aid: int, db: DB, user: m.User = Depends(require("edit"))):
     a.criteria = copy.deepcopy(model.criteria)
     a.weights = {c["key"]: c.get("weight", 0) for c in a.criteria}
     a.ai_scores = {i: ai_recommend_scores(a.target, i, a.criteria) for i in a.indications}
-    a.overrides = {}
+    a.override_rows.clear()
     db.commit()
     return view(a)
 
@@ -170,17 +170,19 @@ def set_override(aid: int, body: OverrideIn, db: DB, user: m.User = Depends(requ
     if body.indication not in a.indications or body.criterion not in keys_of(a):
         raise HTTPException(422, "Unknown indication or criterion")
     ai = a.ai_scores.get(body.indication, {}).get(body.criterion)
-    ov = copy.deepcopy(a.overrides)
+    row = next((o for o in a.override_rows if o.indication == body.indication and o.criterion_key == body.criterion), None)
     if body.score == ai:  # setting back to the AI value removes the override
-        ov.get(body.indication, {}).pop(body.criterion, None)
+        if row:
+            a.override_rows.remove(row)
     else:
         if not body.justification.strip():
             raise HTTPException(422, "Justification is required to override an AI-recommended score")
-        ov.setdefault(body.indication, {})[body.criterion] = {
-            "score": body.score, "justification": body.justification.strip(), "user_id": user.id,
-            "at": datetime.now(timezone.utc).isoformat()}
+        if row is None:
+            row = m.AssessmentOverride(indication=body.indication, criterion_key=body.criterion)
+            a.override_rows.append(row)
+        row.score, row.justification, row.user_id = body.score, body.justification.strip(), user.id
+        row.created_at = datetime.now(timezone.utc)
         audit(db, user, f"Overrode {body.indication}/{body.criterion}: AI {ai} -> {body.score}", "assessment", a.id)
-    a.overrides = ov
     db.commit()
     return view(a)
 
@@ -225,7 +227,16 @@ def load_scenario(aid: int, sid: int, db: DB, user: m.User = Depends(require("ed
     s = next((x for x in a.scenarios if x.id == sid), None)
     if not s:
         raise HTTPException(404, "Scenario not found")
-    a.weights, a.overrides = copy.deepcopy(s.weights), copy.deepcopy(s.overrides)
+    a.weights = copy.deepcopy(s.weights)
+    a.override_rows.clear()
+    db.flush()  # remove old rows before re-adding the scenario's cells (unique per assessment/indication/criterion)
+    for ind, cells in (s.overrides or {}).items():
+        for key, o in cells.items():
+            at = o.get("at")
+            a.override_rows.append(m.AssessmentOverride(
+                indication=ind, criterion_key=key, score=o.get("score"), justification=o.get("justification") or "",
+                user_id=o.get("user_id") or user.id,
+                created_at=datetime.fromisoformat(at) if at else datetime.now(timezone.utc)))
     db.commit()
     return view(a)
 

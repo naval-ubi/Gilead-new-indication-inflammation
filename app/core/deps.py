@@ -12,13 +12,8 @@ from app.db.base import get_db
 bearer = HTTPBearer(auto_error=False)
 DB = Annotated[Session, Depends(get_db)]
 
-# role -> permissions (matches the Admin note: view, create, edit, execute, publish, share, administer)
-PERMS = {
-    "Admin": {"view", "create", "edit", "execute", "publish", "share", "administer"},
-    "Analyst": {"view", "create", "edit", "execute", "share"},
-    "Reviewer": {"view", "edit", "share"},
-    "Viewer": {"view"},
-}
+# Role -> permission mapping lives in the roles / permissions / role_permissions tables
+# (seeded from app.services.catalog.ROLES; editable without a code change).
 
 
 def token_claims(db: DB, cred: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)]) -> dict:
@@ -51,7 +46,7 @@ CurrentUser = Annotated[m.User, Depends(current_user)]
 
 def require(perm: str):
     def dep(user: CurrentUser) -> m.User:
-        if perm not in PERMS.get(user.role, set()):
+        if perm not in user.permission_codes:
             raise HTTPException(status.HTTP_403_FORBIDDEN, f"Requires '{perm}' permission")
         return user
     return dep

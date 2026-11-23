@@ -131,6 +131,8 @@ POST .../save-to-workspace
 
 GET  /datasources           POST /datasources    PATCH /datasources/{id}   POST .../toggle?enabled=   POST .../test
 GET  /admin/overview  /admin/users  /admin/records/{workflow|template|prompt}  /admin/scoring-models  /admin/audit
+GET  /admin/roles           PUT /admin/roles/{rid}/permissions
+GET/POST /admin/groups      PATCH/DELETE /admin/groups/{gid}
 ```
 
 Interactive docs: `http://localhost:8000/docs`.
@@ -140,7 +142,27 @@ Reference PDFs in `docs/` (regenerate after API or model changes; needs `pip ins
 | Document | Generator |
 |---|---|
 | `docs/API_Screen_Integration_Guide.pdf` – endpoint ↔ screen map for FE | `python docs/build_api_doc.py docs/API_Screen_Integration_Guide.pdf` |
-| `docs/Database_ER_Guide.pdf` – ER diagram, data dictionary, DB commands, PostgreSQL DDL (read from the models) | `PYTHONPATH=. python docs/build_er_doc.py docs/Database_ER_Guide.pdf` |
+| `docs/Database_ER_Guide.pdf` – ER diagrams, normalisation decisions, data dictionary, DB commands, PostgreSQL DDL | `PYTHONPATH=. python docs/build_er_doc.py docs/Database_ER_Guide.pdf` |
+| `ER_DIAGRAM.md` – ER diagrams per domain (Mermaid) | `PYTHONPATH=. python docs/build_er_markdown.py` |
+| `docs/ER_Diagram.pdf` / `.png` – the ER diagrams as PDF and image (needs Google Chrome) | `python docs/render_er_diagram.py --png` |
+
+### Normalised schema (v0.4)
+
+* **Roles & permissions** are tables (`roles`, `permissions`, `role_permissions`); `users.role_id` replaces the role
+  text. Permission checks read the database, so an admin can change what a role may do with
+  `PUT /admin/roles/{rid}/permissions` without a release.
+* **Groups** are tables (`groups`, `user_groups`) instead of a JSON list on the user. `item_shares.group_id` replaces
+  the free-text group name. New admin endpoints: `GET /admin/roles`, `GET/POST /admin/groups`,
+  `PATCH/DELETE /admin/groups/{gid}`. `GET /users/directory` adds `group_options [{id, name}]`; sharing accepts
+  `group_id` (or the group name, as before).
+* **Pipeline catalogue**: `pipeline_assets` is split into `sponsors`, `modalities`, `targets`, `indications`,
+  `drug_assets` and `pipeline_programs`. Pipeline API rows keep the same fields (plus `asset_id`).
+* **Scoring overrides** are rows in `assessment_overrides` (with a real `user_id` foreign key) instead of JSON;
+  the `overrides` field in scoring responses is unchanged.
+* **No action needed for existing databases**: `app/db/upgrade.py` runs on start-up, converts older databases in
+  place (keeping users, roles, groups, shares, pipeline data and overrides) and is safe to run repeatedly.
+  Covered by `tests/test_upgrade.py`, which upgrades a real v0.3 schema with data.
+* API responses are unchanged apart from the additions above, so existing frontend integrations keep working.
 
 ### Changes for the updated design (v0.2)
 

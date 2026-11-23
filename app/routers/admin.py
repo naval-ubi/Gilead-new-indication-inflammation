@@ -101,7 +101,8 @@ def overview(db: DB, user: m.User = Depends(require("administer"))):
     models = db.scalars(select(m.ScoringModel)).all()
     counts = {"users": len(users), "connectors": len(conns), "scoring": len(models)}
     sections = [
-        {"key": "users", "name": "Users & Groups", "count": len(users), "badge": f"{sum(u.status == 'Active' for u in users)} live"},
+        {"key": "users", "name": "Users & Groups", "count": len(users), "badge": f"{sum(u.status == 'Active' for u in users)} live",
+         "groups": len(db.scalars(select(m.Group)).all()), "roles": len(db.scalars(select(m.Role)).all())},
         {"key": "scoring", "name": "Scoring Models", "count": len(models),
          "badge": f"{sum(x.status == 'Published' for x in models)} live"},
         {"key": "connectors", "name": "Data Connectors", "count": len(conns), "badge": f"{sum(c.enabled for c in conns)} enabled"},
@@ -119,15 +120,34 @@ def overview(db: DB, user: m.User = Depends(require("administer"))):
 class UserIn(BaseModel):
     name: str
     email: str
-    role: Literal["Admin", "Analyst", "Reviewer", "Viewer"] = "Analyst"
+    role: str = "Analyst"           # a name from GET /admin/roles
     groups: list[str] = []
     status: Literal["Active", "Inactive"] = "Active"
     password: str | None = None
 
 
 def u_out(u: m.User) -> dict:
-    return {"id": u.id, "name": u.name, "email": u.email, "role": u.role, "groups": u.groups, "status": u.status,
-            "last_login": u.last_login}
+    return {"id": u.id, "name": u.name, "email": u.email, "role": u.role.name, "role_id": u.role_id,
+            "groups": u.group_names, "group_ids": [g.id for g in u.groups], "status": u.status, "last_login": u.last_login}
+
+
+def _role(db, name: str) -> m.Role:
+    r = db.scalar(select(m.Role).where(m.Role.name == name))
+    if not r:
+        raise HTTPException(422, f"Unknown role: {name}")
+    return r
+
+
+def _groups(db, names: list[str]) -> list[m.Group]:
+    """Resolve group names; unknown names are created so the existing 'type a group' admin flow keeps working."""
+    out = []
+    for n in dict.fromkeys(x.strip() for x in names if x.strip()):
+        g = db.scalar(select(m.Group).where(m.Group.name == n))
+        if g is None:
+            g = m.Group(name=n)
+            db.add(g)
+        out.append(g)
+    return out
 
 
 @router.get("/admin/users")
@@ -139,7 +159,8 @@ def users(db: DB, user: m.User = Depends(require("administer"))):
 def create_user(body: UserIn, db: DB, user: m.User = Depends(require("administer"))):
     if db.scalar(select(m.User).where(m.User.email == body.email.lower())):
         raise HTTPException(409, "Email already exists")
-    u = m.User(name=body.name, email=body.email.lower(), role=body.role, groups=body.groups, status=body.status,
+    u = m.User(name=body.name, email=body.email.lower(), role=_role(db, body.role), groups=_groups(db, body.groups),
+               status=body.status,
                password_hash=hash_password(body.password) if body.password else "")  # SSO users have no local password
     db.add(u)
     db.commit()
@@ -153,12 +174,105 @@ def update_user(uid: int, body: UserIn, db: DB, user: m.User = Depends(require("
     if not u:
         raise HTTPException(404, "Not found")
     before = u_out(u)
-    u.name, u.role, u.groups, u.status = body.name, body.role, body.groups, body.status
+    u.name, u.role, u.groups, u.status = body.name, _role(db, body.role), _groups(db, body.groups), body.status
     if body.password:
         u.password_hash = hash_password(body.password)
     db.commit()
     audit(db, user, f"Edited user {u.email} (change recorded with previous and new values)", "user", u.id, before, u_out(u))
     return u_out(u)
+
+
+# ---- roles & groups (normalised tables)
+@router.get("/admin/roles")
+def roles(db: DB, user: m.User = Depends(require("administer"))):
+    """Roles with the permissions each grants, and the full permission list (for a role editor)."""
+    counts = {}
+    for u in db.scalars(select(m.User)):
+        counts[u.role_id] = counts.get(u.role_id, 0) + 1
+    return {"roles": [{"id": r.id, "name": r.name, "description": r.description, "user_count": counts.get(r.id, 0),
+                       "permissions": [p.code for p in r.permissions]} for r in db.scalars(select(m.Role).order_by(m.Role.id))],
+            "permissions": [{"id": p.id, "code": p.code, "description": p.description}
+                            for p in db.scalars(select(m.Permission).order_by(m.Permission.id))]}
+
+
+class RolePermsIn(BaseModel):
+    permissions: list[str]
+
+
+@router.put("/admin/roles/{rid}/permissions")
+def set_role_permissions(rid: int, body: RolePermsIn, db: DB, user: m.User = Depends(require("administer"))):
+    r = db.get(m.Role, rid)
+    if not r:
+        raise HTTPException(404, "Role not found")
+    perms = {p.code: p for p in db.scalars(select(m.Permission))}
+    unknown = [c for c in body.permissions if c not in perms]
+    if unknown:
+        raise HTTPException(422, f"Unknown permissions: {unknown}")
+    if r.id == user.role_id and "administer" not in body.permissions:
+        raise HTTPException(409, "You cannot remove 'administer' from your own role")
+    before = {"permissions": [p.code for p in r.permissions]}
+    r.permissions = [perms[c] for c in dict.fromkeys(body.permissions)]
+    db.commit()
+    audit(db, user, f"Changed permissions of role {r.name}", "role", r.id, before, {"permissions": body.permissions})
+    return {"id": r.id, "name": r.name, "permissions": [p.code for p in r.permissions]}
+
+
+class GroupIn(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    description: str = ""
+
+
+def g_out(g: m.Group, members: int) -> dict:
+    return {"id": g.id, "name": g.name, "description": g.description, "member_count": members}
+
+
+@router.get("/admin/groups")
+def list_groups(db: DB, user: m.User = Depends(require("administer"))):
+    counts = {}
+    for row in db.scalars(select(m.UserGroup)):
+        counts[row.group_id] = counts.get(row.group_id, 0) + 1
+    return [g_out(g, counts.get(g.id, 0)) for g in db.scalars(select(m.Group).order_by(m.Group.name))]
+
+
+@router.post("/admin/groups", status_code=201)
+def create_group(body: GroupIn, db: DB, user: m.User = Depends(require("administer"))):
+    if db.scalar(select(m.Group).where(m.Group.name == body.name.strip())):
+        raise HTTPException(409, "A group with this name already exists")
+    g = m.Group(name=body.name.strip(), description=body.description)
+    db.add(g)
+    db.commit()
+    audit(db, user, f"Created group {g.name}", "group", g.id)
+    return g_out(g, 0)
+
+
+@router.patch("/admin/groups/{gid}")
+def update_group(gid: int, body: GroupIn, db: DB, user: m.User = Depends(require("administer"))):
+    g = db.get(m.Group, gid)
+    if not g:
+        raise HTTPException(404, "Group not found")
+    clash = db.scalar(select(m.Group).where(m.Group.name == body.name.strip(), m.Group.id != gid))
+    if clash:
+        raise HTTPException(409, "A group with this name already exists")
+    before = {"name": g.name, "description": g.description}
+    g.name, g.description = body.name.strip(), body.description
+    db.commit()
+    audit(db, user, f"Edited group {g.name}", "group", g.id, before, {"name": g.name, "description": g.description})
+    return g_out(g, len(db.scalars(select(m.UserGroup).where(m.UserGroup.group_id == gid)).all()))
+
+
+@router.delete("/admin/groups/{gid}", status_code=204)
+def delete_group(gid: int, db: DB, user: m.User = Depends(require("administer"))):
+    """Only empty groups that nothing is shared with can be deleted, so no access is lost silently."""
+    g = db.get(m.Group, gid)
+    if not g:
+        raise HTTPException(404, "Group not found")
+    if db.scalar(select(m.UserGroup).where(m.UserGroup.group_id == gid).limit(1)):
+        raise HTTPException(409, "Remove the group's members first")
+    if db.scalar(select(m.ItemShare).where(m.ItemShare.group_id == gid).limit(1)):
+        raise HTTPException(409, "Items are still shared with this group")
+    audit(db, user, f"Deleted group {g.name}", "group", g.id)
+    db.delete(g)
+    db.commit()
 
 
 # ---- generic config records (workflows / templates / prompts)

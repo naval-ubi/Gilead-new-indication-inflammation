@@ -11,6 +11,21 @@ import re
 MODULE_NAMES = {"ai": "AI Scientific Search", "pipeline": "Drug Pipeline Explorer", "cioa": "Competitive Insights",
                 "scoring": "Prioritization Scoring"}
 
+# ------------------------------------------------------------------ roles & permissions (seed data for the tables)
+PERMISSIONS = {
+    "view": "Open screens and results", "create": "Create searches, assessments and workspace items",
+    "edit": "Edit, override scores, approve reports", "execute": "Start research runs",
+    "publish": "Publish workflows, templates and scoring models", "share": "Share items with colleagues and groups",
+    "administer": "Manage users, groups, connectors and configuration",
+}
+ROLES = {  # name -> (description, permission codes)
+    "Admin": ("Full access including administration", ["view", "create", "edit", "execute", "publish", "share", "administer"]),
+    "Analyst": ("Runs research and builds assessments", ["view", "create", "edit", "execute", "share"]),
+    "Reviewer": ("Reviews and comments on shared work", ["view", "edit", "share"]),
+    "Viewer": ("Read-only access", ["view"]),
+}
+DEFAULT_ROLE = "Analyst"
+
 # ------------------------------------------------------------------ indications / therapeutic areas / targets
 CORE_INDICATIONS = ["SLE", "RA", "AD", "Hidradenitis suppurativa"]
 ADDITIONAL_INDICATIONS = ["Psoriasis", "Psoriatic arthritis", "Sjögren’s disease", "Systemic sclerosis", "Dermatomyositis",

@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
-from app.core.deps import DB, PERMS, Claims, CurrentUser, audit
+from app.core.deps import DB, Claims, CurrentUser, audit
 from app.core.security import create_token, verify_password
 from app.db import models as m
 from app.services import catalog
@@ -37,8 +37,8 @@ class PrefsIn(BaseModel):
 
 
 def user_out(u: m.User) -> dict:
-    return {"id": u.id, "name": u.name, "email": u.email, "role": u.role, "groups": u.groups,
-            "permissions": sorted(PERMS.get(u.role, set())), "context": u.context, "prefs": u.prefs}
+    return {"id": u.id, "name": u.name, "email": u.email, "role": u.role.name, "groups": u.group_names,
+            "permissions": sorted(u.permission_codes), "context": u.context, "prefs": u.prefs}
 
 
 @router.post("/auth/login")
@@ -48,7 +48,7 @@ def login(body: LoginIn, db: DB):
         raise HTTPException(401, "Invalid credentials")
     u.last_login = datetime.now(timezone.utc)
     db.commit()
-    return {"access_token": create_token(u.id, u.role), "token_type": "bearer", "user": user_out(u)}
+    return {"access_token": create_token(u.id, u.role.name), "token_type": "bearer", "user": user_out(u)}
 
 
 @router.post("/auth/logout", status_code=204)

@@ -101,7 +101,7 @@ def access_of(item: m.WorkspaceItem, user: m.User) -> str | None:
         return "Owner"
     best = None
     for s in item.shares:
-        if s.user_id == user.id or (s.group and s.group in (user.groups or [])):
+        if s.user_id == user.id or (s.group_id and s.group_id in {g.id for g in user.groups}):
             if s.permission == "edit":
                 return "edit"
             best = "view"
@@ -130,7 +130,8 @@ def item_out(it: m.WorkspaceItem, acc: str, db, detail: bool = False) -> dict:
         d.update({"question": it.question, "summary": it.summary, "params": it.params, "source_count": it.source_count,
                   "snapshot": it.snapshot,
                   "versions": [{"id": v.id, "label": v.label, "note": v.note, "created_at": v.created_at} for v in it.versions],
-                  "shared_with": [{"id": s.id, "user": users.get(s.user_id), "group": s.group, "permission": s.permission} for s in it.shares],
+                  "shared_with": [{"id": s.id, "user": users.get(s.user_id), "group": s.group.name if s.group else None,
+                                   "group_id": s.group_id, "permission": s.permission} for s in it.shares],
                   "notes": [{"id": n.id, "user": users.get(n.user_id), "text": n.text, "created_at": n.created_at} for n in it.notes]})
     return d
 
@@ -251,22 +252,36 @@ def restore_version(item_id: int, version_id: int, db: DB, user: m.User = Depend
 
 class ShareIn(BaseModel):
     user_id: int | None = None
-    group: str | None = None
+    group: str | None = None        # group name (as shown in the share dialog) ...
+    group_id: int | None = None     # ... or its id from GET /users/directory
     permission: Literal["view", "edit"] = "view"
 
 
 @router.post("/workspace/items/{item_id}/share")
 def share(item_id: int, body: ShareIn, db: DB, user: m.User = Depends(require("share"))):
     it, _ = get_item(db, item_id, user, "owner")
-    if not (body.user_id or body.group):
+    if not (body.user_id or body.group or body.group_id):
         raise HTTPException(422, "Choose a colleague or a group")
-    s = next((x for x in it.shares if x.user_id == body.user_id and x.group == body.group), None)
+    if body.user_id and (body.group or body.group_id):
+        raise HTTPException(422, "Share with either a colleague or a group, not both in one request")
+    group_id = body.group_id
+    if body.group and not group_id:
+        g = db.scalar(select(m.Group).where(m.Group.name == body.group))
+        if not g:
+            raise HTTPException(422, f"Unknown group: {body.group}")
+        group_id = g.id
+    elif group_id and not db.get(m.Group, group_id):
+        raise HTTPException(422, "Unknown group")
+    if body.user_id and not db.get(m.User, body.user_id):
+        raise HTTPException(422, "Unknown user")
+    uid = body.user_id
+    s = next((x for x in it.shares if x.user_id == uid and x.group_id == group_id), None)
     if s:
         s.permission = body.permission
     else:
-        it.shares.append(m.ItemShare(user_id=body.user_id, group=body.group, permission=body.permission))
-        if body.user_id:
-            db.add(m.Notification(user_id=body.user_id, title="Item shared with you", route="workspace",
+        it.shares.append(m.ItemShare(user_id=uid, group_id=group_id, permission=body.permission))
+        if uid:
+            db.add(m.Notification(user_id=uid, title="Item shared with you", route="workspace",
                                   body=f'{user.name} shared "{it.title}" with you'))
     db.commit()
     return {"ok": True}
@@ -298,7 +313,8 @@ def directory(db: DB, user: CurrentUser):
     """Share dialog picker."""
     users = db.scalars(select(m.User).where(m.User.status == "Active", m.User.id != user.id)).all()
     return {"users": [{"id": u.id, "name": u.name} for u in users],
-            "groups": sorted({g for u in db.scalars(select(m.User)) for g in (u.groups or [])})}
+            "groups": sorted(g.name for g in db.scalars(select(m.Group))),               # kept for v0.3 clients
+            "group_options": [{"id": g.id, "name": g.name} for g in db.scalars(select(m.Group).order_by(m.Group.name))]}
 
 
 # ================================================================== HISTORY

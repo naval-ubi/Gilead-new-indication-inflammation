@@ -282,8 +282,7 @@ def build_ai_result(db, run: m.Run, work: dict) -> dict:
 
 
 def query_assets(db, filters: dict | None, more: dict | None) -> list[dict]:
-    rows = [{c.name: getattr(a, c.name) for c in a.__table__.columns if c.name != "updated_at"}
-            for a in db.scalars(select(m.PipelineAsset))]
+    rows = [p.as_row() for p in db.scalars(select(m.PipelineProgram).order_by(m.PipelineProgram.id)).unique()]
     return pl.filter_assets(rows, filters, more)
 
 

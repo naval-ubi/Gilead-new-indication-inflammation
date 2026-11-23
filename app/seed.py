@@ -63,23 +63,41 @@ def seed(db) -> None:
     if db.scalar(select(m.User).limit(1)):
         return
     pw = hash_password("ChangeMe123!")  # demo only
-    db.add_all([
-        m.User(name="Maria Chen", email="maria.chen@example.com", role="Admin", groups=["R&D"], password_hash=pw),
-        m.User(name="Swanik", email="swanik@example.com", role="Analyst", groups=["Commercial", "Clinical"], password_hash=pw),
-        m.User(name="Sam Patel", email="sam.patel@example.com", role="Reviewer", groups=["Market Access"], password_hash=pw),
-        m.User(name="Jordan Lee", email="jordan.lee@example.com", role="Viewer", groups=["Clinical"], password_hash=pw, status="Inactive"),
-    ])
+    roles = {r.name: r for r in db.scalars(select(m.Role))}  # created by app.db.upgrade.ensure_reference_data
+    groups = {g: _get_or_create(db, m.Group, name=g) for g in ("R&D", "Commercial", "Clinical", "Market Access")}
+    for name, email, role, grp, status in [
+        ("Maria Chen", "maria.chen@example.com", "Admin", ["R&D"], "Active"),
+        ("Swanik", "swanik@example.com", "Analyst", ["Commercial", "Clinical"], "Active"),
+        ("Sam Patel", "sam.patel@example.com", "Reviewer", ["Market Access"], "Active"),
+        ("Jordan Lee", "jordan.lee@example.com", "Viewer", ["Clinical"], "Inactive"),
+    ]:
+        db.add(m.User(name=name, email=email, role=roles[role], groups=[groups[g] for g in grp], status=status,
+                      password_hash=pw))
     for cat, name, desc in CONNECTORS:
         db.add(m.Connector(category=cat, name=name, description=desc, enabled=name not in DISABLED,
                            license="Licensed" if name in LICENSED else "Open",
                            health="Warning" if name == "Gilead internal clinical repositories" else "Failed" if name == "FDA FAERS" else "Healthy",
                            last_sync=datetime.now(timezone.utc)))
-    for a in ASSETS:
-        db.add(m.PipelineAsset(name=a[0], sponsor=a[1], modality=a[2], target=a[3], indication=a[4], stage=a[5],
-                               activity=a[6], geography=a[7]))
+    for name, sponsor, modality, target, indication, stage, activity, geography in ASSETS:
+        sp = _get_or_create(db, m.Sponsor, name=sponsor)
+        asset = db.scalar(select(m.DrugAsset).filter_by(name=name, sponsor_id=sp.id)) or m.DrugAsset(
+            name=name, sponsor=sp, modality=_get_or_create(db, m.Modality, name=modality),
+            target=_get_or_create(db, m.Target, name=target))
+        db.add(m.PipelineProgram(asset=asset, indication=_get_or_create(db, m.Indication, code=indication), stage=stage,
+                                 activity=activity, geography=geography))
+        db.flush()
     db.add(m.ScoringModel(name="Commercial Indication Prioritization", version="v2.1", status="Published", criteria=[
         {"key": k, "name": n, "rule": r, "scale": {"1": s[0], "3": s[1], "5": s[2]}, "weight": 20} for k, n, r, s in CRITERIA]))
     db.commit()
+
+
+def _get_or_create(db, model, **key):
+    obj = db.scalar(select(model).filter_by(**key))
+    if obj is None:
+        obj = model(**key)
+        db.add(obj)
+        db.flush()
+    return obj
 
 
 def _upsert_record(db, kind: str, name: str, status: str, version: str, data: dict) -> None:
@@ -100,12 +118,21 @@ def seed_reference(db) -> None:
         name, tver, tstatus = TEMPLATES[w["key"]]
         _upsert_record(db, "template", name, tstatus, tver, {"linked_workflow": w["name"], "workflow_key": w["key"],
                                                              "sections": len(w["sections"])})
-    renames = {"modality": {"Protein degrader": "Targeted protein degrader", "Biologic": "Monoclonal antibody"},
-               "stage": {"Research": "Discovery"}}  # demo values used by the previous UI
-    for a in db.scalars(select(m.PipelineAsset)):
-        for col, mp in renames.items():
-            if getattr(a, col) in mp:
-                setattr(a, col, mp[getattr(a, col)])
+    # demo values used by the previous UI
+    for old, new in {"Protein degrader": "Targeted protein degrader", "Biologic": "Monoclonal antibody"}.items():
+        mod = db.scalar(select(m.Modality).filter_by(name=old))
+        if mod is None:
+            continue
+        keep = db.scalar(select(m.Modality).filter_by(name=new))
+        if keep is None:
+            mod.name = new
+        else:  # both exist: point assets at the new name, remove the old one
+            for a in db.scalars(select(m.DrugAsset).filter_by(modality_id=mod.id)):
+                a.modality_id = keep.id
+            db.flush()
+            db.delete(mod)
+    for p in db.scalars(select(m.PipelineProgram).filter_by(stage="Research")):
+        p.stage = "Discovery"
     for name, scope, variables, visibility, status in PROMPTS:
         _upsert_record(db, "prompt", name, status, "v1",
                        {"scope": scope, "variables": variables, "visibility": visibility})

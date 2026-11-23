@@ -403,10 +403,14 @@ def cioa_workflows(user: CurrentUser, question: str | None = None):
 
 @router.get("/pipeline/options")
 def pipeline_options(db: DB, user: CurrentUser):
-    def distinct(col):
-        return sorted(x for x in db.scalars(select(col).distinct()) if x)
-    return {"targets": distinct(m.PipelineAsset.target), "indications": distinct(m.PipelineAsset.indication),
-            "modalities": distinct(m.PipelineAsset.modality), "stages": pl.STAGES,
+    def used(col, *joins):  # values that at least one pipeline program uses (as before normalisation)
+        q = select(col).select_from(m.PipelineProgram)
+        for j in joins:
+            q = q.join(j)
+        return sorted(x for x in db.scalars(q.distinct()) if x)
+    return {"targets": used(m.Target.name, m.DrugAsset, m.Target), "indications": used(m.Indication.code, m.Indication),
+            "modalities": used(m.Modality.name, m.DrugAsset, m.Modality), "stages": pl.STAGES,
+            "sponsors": used(m.Sponsor.name, m.DrugAsset, m.Sponsor),
             # grouped dropdowns of the new UI (options may exist before any asset uses them)
             "groups": catalog.PIPELINE_FILTER_GROUPS, "hints": catalog.OPTION_HINTS,
             "stage_equivalents": pl.STAGE_ALIASES, "more_filters": catalog.MORE_FILTERS,

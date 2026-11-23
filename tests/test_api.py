@@ -197,3 +197,68 @@ def test_profile_and_logout(client):
     assert client.post("/api/v1/auth/logout", headers=h).status_code == 401
     assert client.get("/api/v1/me", headers=other).status_code == 200  # other sessions keep working
     assert client.post("/api/v1/auth/logout").status_code == 401
+
+
+# ------------------------------------------------------------------ v0.4: normalised roles, groups, pipeline, overrides
+def test_roles_groups_admin(client):
+    admin = auth(client, "maria.chen@example.com")
+    r = client.get("/api/v1/admin/roles", headers=admin).json()
+    viewer = next(x for x in r["roles"] if x["name"] == "Viewer")
+    assert viewer["permissions"] == ["view"] and len(r["permissions"]) == 7
+    g = client.post("/api/v1/admin/groups", headers=admin, json={"name": "Oncology"})
+    assert g.status_code == 201
+    assert client.post("/api/v1/admin/groups", headers=admin, json={"name": "Oncology"}).status_code == 409
+    u = client.post("/api/v1/admin/users", headers=admin,
+                    json={"name": "Dee", "email": "dee@example.com", "role": "Viewer", "groups": ["Oncology"], "password": "Pw123456!"})
+    assert u.status_code == 201 and u.json()["role"] == "Viewer" and u.json()["groups"] == ["Oncology"]
+    assert client.post("/api/v1/admin/users", headers=admin,
+                       json={"name": "E", "email": "e@example.com", "role": "Wizard"}).status_code == 422
+    # a group with members cannot be deleted
+    assert client.delete(f"/api/v1/admin/groups/{g.json()['id']}", headers=admin).status_code == 409
+    # permissions now come from the database: granting 'create' to Viewer takes effect immediately
+    tok = client.post("/api/v1/auth/login", json={"email": "dee@example.com", "password": "Pw123456!"}).json()["access_token"]
+    dee = {"Authorization": f"Bearer {tok}"}
+    assert client.post("/api/v1/scoring/assessments", headers=dee, json={"model_id": 1}).status_code == 403
+    client.put(f"/api/v1/admin/roles/{viewer['id']}/permissions", headers=admin, json={"permissions": ["view", "create"]})
+    assert client.post("/api/v1/scoring/assessments", headers=dee, json={"model_id": 1}).status_code == 201
+    client.put(f"/api/v1/admin/roles/{viewer['id']}/permissions", headers=admin, json={"permissions": ["view"]})
+    me = next(x for x in r["roles"] if x["name"] == "Admin")
+    assert client.put(f"/api/v1/admin/roles/{me['id']}/permissions", headers=admin,
+                      json={"permissions": ["view"]}).status_code == 409   # cannot lock yourself out
+
+
+def test_share_with_group_grants_access(client):
+    h = auth(client)                                   # Swanik
+    created = run(client, h, module="ai", question="IRAK4 group sharing check")
+    item_id = client.post(f"/api/v1/runs/{created['id']}/save", headers=h, json={}).json()["item_id"]
+    sam = auth(client, "sam.patel@example.com")        # member of Market Access
+    assert client.get(f"/api/v1/workspace/items/{item_id}", headers=sam).status_code == 404
+    groups = client.get("/api/v1/users/directory", headers=h).json()["group_options"]
+    ma = next(g for g in groups if g["name"] == "Market Access")
+    assert client.post(f"/api/v1/workspace/items/{item_id}/share", headers=h,
+                       json={"group_id": ma["id"], "permission": "view"}).status_code == 200
+    d = client.get(f"/api/v1/workspace/items/{item_id}", headers=sam).json()
+    assert d["access"] == "view" and d["shared_with"][0]["group"] == "Market Access"
+    assert client.post(f"/api/v1/workspace/items/{item_id}/share", headers=h,
+                       json={"group": "No Such Team"}).status_code == 422
+    assert client.post(f"/api/v1/workspace/items/{item_id}/share", headers=h,
+                       json={"user_id": 3, "group": "Market Access"}).status_code == 422
+
+
+def test_override_stored_as_row_and_scenario_roundtrip(client):
+    h = auth(client)
+    a = client.post("/api/v1/scoring/assessments", headers=h, json={"model_id": 1}).json()
+    ok = client.put(f"/api/v1/scoring/assessments/{a['id']}/overrides", headers=h,
+                    json={"indication": "RA", "criterion": "population", "score": 3, "justification": "Claims data"}).json()
+    assert ok["overrides"]["RA"]["population"]["justification"] == "Claims data"
+    sid = client.post(f"/api/v1/scoring/assessments/{a['id']}/scenarios", headers=h, json={"name": "S1"}).json()["id"]
+    client.post(f"/api/v1/scoring/assessments/{a['id']}/reset", headers=h)
+    loaded = client.post(f"/api/v1/scoring/assessments/{a['id']}/scenarios/{sid}/load", headers=h).json()
+    assert loaded["overrides"]["RA"]["population"]["score"] == 3
+
+
+def test_pipeline_options_from_lookups(client):
+    o = client.get("/api/v1/pipeline/options", headers=auth(client)).json()
+    assert "Sponsor 3" in o["sponsors"] and o["indications"] == ["AD", "RA", "SLE"]
+    rows = client.get("/api/v1/pipeline/assets", headers=auth(client), params={"indication": "SLE"}).json()["data"]
+    assert {"asset_id", "name", "sponsor", "modality", "target", "indication", "stage"} <= set(rows[0])

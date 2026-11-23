@@ -84,7 +84,7 @@ def callout(text):
 
 story = [
     Paragraph("API-to-Screen Integration Guide", H1),
-    Paragraph(f"New Indication Intelligence Platform · Backend v0.3 · {date.today():%d %b %Y}<br/>"
+    Paragraph(f"New Indication Intelligence Platform · Backend v0.4 · {date.today():%d %b %Y}<br/>"
               "Which endpoint each screen and control calls, for wiring the updated UI design to the FastAPI backend.", SUB),
     Paragraph("1. Integration basics", H2),
     kv([
@@ -232,7 +232,9 @@ story += section("9. Workspace", None, [
     ("Rename / Archive / Restore", [("PATCH", "/workspace/items/{id}")], "{title?, folder?, archived?}. Owner only."),
     ("Duplicate / Delete", [("POST", "/workspace/items/{id}/duplicate"), ("DELETE", "/workspace/items/{id}")], ""),
     ("Share dialog / permission change", [("GET", "/users/directory"), ("POST", "/workspace/items/{id}/share"),
-                                          ("DELETE", "/workspace/items/{id}/share/{share_id}")], "{user_id | group, permission: view | edit}."),
+                                          ("DELETE", "/workspace/items/{id}/share/{share_id}")],
+     "Directory gives users[] and group_options[{id, name}]. Body: {user_id} OR {group_id} (or group name), plus permission view | edit. "
+     "Sending both a user and a group, or an unknown group, returns 422."),
     ("Restore version", [("POST", "/workspace/items/{id}/versions/{version_id}/restore")], ""),
     ("Notes and comments", [("POST", "/workspace/items/{id}/notes")], "{text}; view-only collaborators may comment."),
 ])
@@ -250,7 +252,14 @@ story += section("11. Data Connectors &amp; Admin", "Admin endpoints require the
     ("Add / Edit connector", [("POST", "/datasources"), ("PATCH", "/datasources/{cid}")], "{name, category, description, license}. New = disabled."),
     ("Enable switch / Test", [("POST", "/datasources/{cid}/toggle"), ("POST", "/datasources/{cid}/test")], "toggle takes ?enabled=true|false."),
     ("Admin overview cards", [("GET", "/admin/overview")], "sections[]: key, name, count, badge (“3 live”, “39 enabled”)."),
-    ("Users &amp; Groups", [("GET", "/admin/users"), ("POST", "/admin/users"), ("PATCH", "/admin/users/{uid}")], ""),
+    ("Users", [("GET", "/admin/users"), ("POST", "/admin/users"), ("PATCH", "/admin/users/{uid}")],
+     "{name, email, role (name from /admin/roles), groups [names], status, password?}. Unknown role = 422; new group names are created. "
+     "Responses include role_id and group_ids."),
+    ("Roles &amp; permissions", [("GET", "/admin/roles"), ("PUT", "/admin/roles/{rid}/permissions")],
+     "roles[{id, name, description, user_count, permissions[]}] + permissions[{code, description}]. PUT {permissions: [codes]} "
+     "takes effect immediately; you cannot remove administer from your own role (409)."),
+    ("Groups", [("GET", "/admin/groups"), ("POST", "/admin/groups"), ("PATCH", "/admin/groups/{gid}"), ("DELETE", "/admin/groups/{gid}")],
+     "{name, description}; list includes member_count. Duplicate name = 409. Delete only when the group has no members and no shares (409)."),
     ("AI Workflows / Report Templates / Prompts Library", [("GET", "/admin/records/{kind}"), ("POST", "/admin/records/{kind}"),
                                                           ("PATCH", "/admin/records/{kind}/{rid}"), ("POST", "/admin/records/{kind}/{rid}/deactivate")],
      "kind = workflow | template | prompt. Prompt data: scope, variables, visibility."),
@@ -270,7 +279,7 @@ def deco(c, d):
     c.rect(0, A4[1] - 5, A4[0], 5, fill=1, stroke=0)
     c.setFont("Helvetica", 7.5)
     c.setFillColor(MUT)
-    c.drawString(18 * mm, 10 * mm, "API-to-Screen Integration Guide · Backend v0.3")
+    c.drawString(18 * mm, 10 * mm, "API-to-Screen Integration Guide · Backend v0.4")
     c.drawRightString(A4[0] - 18 * mm, 10 * mm, f"Page {d.page}")
     c.restoreState()
 
