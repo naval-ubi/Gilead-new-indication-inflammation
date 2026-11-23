@@ -3,6 +3,59 @@
 Backend for the prototype (originally `Mon_16_Nov_New_Indication.html`, updated for `Updated Design Indication.html`). The prototype keeps all state in
 JavaScript arrays and `localStorage`; this project replaces each of those with a real API.
 
+## Getting started for frontend developers
+
+You run your own copy of the API on your machine. No shared database is needed: on first start the API creates
+`gilead.db` (SQLite) and fills it with demo data (users, data sources, pipeline assets, scoring model, workflows).
+
+**1. Install and start** (Python 3.10 or newer; 3.12+ recommended)
+```bash
+git clone https://github.com/navalpatil-champprog/Gilead-new-indication-inflammation.git
+cd Gilead-new-indication-inflammation
+python3 -m venv .venv
+source .venv/bin/activate                # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+cp .env.example .env                     # Windows: copy .env.example .env
+uvicorn app.main:app --reload
+```
+
+**2. Use it**
+
+| What | Where |
+|---|---|
+| API base URL | `http://localhost:8000/api/v1` |
+| Try every endpoint in the browser | `http://localhost:8000/docs` (click *Authorize* and paste the token from `/auth/login`) |
+| OpenAPI schema (for generating types / clients) | `http://localhost:8000/openapi.json` |
+| Which endpoint each screen calls | [`docs/API_Screen_Integration_Guide.pdf`](docs/API_Screen_Integration_Guide.pdf) |
+| Data model | [`docs/Database_ER_Guide.pdf`](docs/Database_ER_Guide.pdf) |
+
+Demo logins, password `ChangeMe123!`: `swanik@example.com` (Analyst), `maria.chen@example.com` (Admin, needed for
+Admin and connector settings), `sam.patel@example.com` (Reviewer).
+
+**3. Good to know**
+
+* **CORS:** `http://localhost:5173` and `http://localhost:3000` are allowed. If your dev server uses another port,
+  add it to `CORS_ORIGINS` in `.env` (comma-separated) and restart.
+* **Empty screens at first:** Home, History and Workspace fill up as you use the app. To create sample data quickly,
+  start a few research runs (they complete in about a second locally):
+  ```bash
+  TOKEN=$(curl -s -X POST localhost:8000/api/v1/auth/login -H 'Content-Type: application/json' \
+    -d '{"email":"swanik@example.com","password":"ChangeMe123!"}' | python3 -c "import sys,json;print(json.load(sys.stdin)['access_token'])")
+  curl -s -X POST localhost:8000/api/v1/runs -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+    -d '{"module":"ai","question":"What role does IRAK4 play in SLE?"}'
+  curl -s -X POST localhost:8000/api/v1/runs -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+    -d '{"module":"cioa","question":"Map IRAK4 competitors in SLE","workflow":"competitive"}'
+  ```
+* **Start over:** stop the server, delete `gilead.db`, start again. It is recreated with demo data.
+* **Get the latest API:** `git pull`, then `pip install -r requirements.txt` and restart. Your database is upgraded
+  automatically on start.
+* **Placeholder content:** research answers, report text and AI Rephrase return placeholder text until the real AI
+  and data sources are connected. Build against the response *structure* (field names and types), not the wording.
+* **Run progress:** prefer polling `GET /runs/{id}` (about once a second). `GET /runs/{id}/events` (live stream)
+  works locally but may not be available in every cloud deployment.
+* **Auth:** send `Authorization: Bearer <token>` on every call. A 401 means the token expired or the user logged out:
+  send them back to sign-in.
+
 ## 1. What the prototype tells us the backend must do
 
 | UI module | What it really needs from the server |
