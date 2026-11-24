@@ -4,6 +4,7 @@ column or its own table (roles, permissions, groups, pipeline lookups, scoring o
 from datetime import datetime, timezone
 
 from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.types import TypeDecorator
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -12,6 +13,10 @@ from app.db.base import Base
 
 def now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+# JSON documents: JSONB on PostgreSQL (binary, indexable), plain JSON elsewhere (SQLite in development).
+JSONType = JSON().with_variant(JSONB(), "postgresql")
 
 
 class UTCDateTime(TypeDecorator):
@@ -26,8 +31,9 @@ class UTCDateTime(TypeDecorator):
         return value
 
     def process_result_value(self, value, dialect):
-        if value is not None and value.tzinfo is None:
-            value = value.replace(tzinfo=timezone.utc)
+        # SQLite returns naive values; PostgreSQL returns them in the server's time zone. Always hand back UTC.
+        if value is not None:
+            value = value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
         return value
 
 
@@ -90,8 +96,8 @@ class User(Base):
     role_id: Mapped[int] = mapped_column(ForeignKey("roles.id"), index=True)
     status: Mapped[str] = mapped_column(String(20), default="Active")
     last_login: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
-    context: Mapped[dict] = mapped_column(JSON, default=default_context)  # header "Research context" chip
-    prefs: Mapped[dict] = mapped_column(JSON, default=default_prefs)      # Preferences dialog
+    context: Mapped[dict] = mapped_column(JSONType, default=default_context)  # header "Research context" chip
+    prefs: Mapped[dict] = mapped_column(JSONType, default=default_prefs)      # Preferences dialog
     role: Mapped["Role"] = relationship(lazy="joined")
     groups: Mapped[list["Group"]] = relationship(secondary="user_groups", lazy="selectin", order_by="Group.name")
 
@@ -115,12 +121,12 @@ class Run(Base):
     title: Mapped[str] = mapped_column(String(300))
     question: Mapped[str] = mapped_column(Text)
     mode: Mapped[str] = mapped_column(String(20), default="Standard")  # Standard|Deep Research
-    params: Mapped[dict] = mapped_column(JSON, default=dict)
+    params: Mapped[dict] = mapped_column(JSONType, default=dict)
     status: Mapped[str] = mapped_column(String(20), default="In Progress", index=True)  # In Progress|Paused|Failed|Completed|Cancelled
-    steps: Mapped[list] = mapped_column(JSON, default=list)  # [{name,status}]
+    steps: Mapped[list] = mapped_column(JSONType, default=list)  # [{name,status}]
     step_index: Mapped[int] = mapped_column(Integer, default=0)
     step_label: Mapped[str] = mapped_column(String(300), default="")
-    result: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    result: Mapped[dict | None] = mapped_column(JSONType, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     source_count: Mapped[int] = mapped_column(Integer, default=0)
     project: Mapped[str] = mapped_column(String(120), default="")
@@ -147,8 +153,8 @@ class WorkspaceItem(Base):
     status: Mapped[str] = mapped_column(String(20), default="Saved")  # Saved|Draft|Completed
     question: Mapped[str] = mapped_column(Text, default="")
     summary: Mapped[str] = mapped_column(Text, default="")
-    params: Mapped[dict] = mapped_column(JSON, default=dict)
-    snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # saved result; reopening does NOT rerun
+    params: Mapped[dict] = mapped_column(JSONType, default=dict)
+    snapshot: Mapped[dict | None] = mapped_column(JSONType, nullable=True)  # saved result; reopening does NOT rerun
     source_count: Mapped[int] = mapped_column(Integer, default=0)
     archived: Mapped[bool] = mapped_column(Boolean, default=False)
     run_id: Mapped[int | None] = mapped_column(ForeignKey("runs.id"), nullable=True)
@@ -165,7 +171,7 @@ class ItemVersion(Base):
     item_id: Mapped[int] = mapped_column(ForeignKey("workspace_items.id"), index=True)
     label: Mapped[str] = mapped_column(String(20))
     note: Mapped[str] = mapped_column(String(300), default="")
-    snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    snapshot: Mapped[dict | None] = mapped_column(JSONType, nullable=True)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=now)
 
 
@@ -259,7 +265,7 @@ class ScoringModel(Base):
     name: Mapped[str] = mapped_column(String(160))
     version: Mapped[str] = mapped_column(String(20), default="v1")
     status: Mapped[str] = mapped_column(String(20), default="Draft")  # Draft|Published|Inactive
-    criteria: Mapped[list] = mapped_column(JSON, default=list)  # [{key,name,rule,scale:{1,3,5},weight}]
+    criteria: Mapped[list] = mapped_column(JSONType, default=list)  # [{key,name,rule,scale:{1,3,5},weight}]
 
 
 class Assessment(Base):
@@ -269,10 +275,10 @@ class Assessment(Base):
     model_id: Mapped[int] = mapped_column(ForeignKey("scoring_models.id"))
     title: Mapped[str] = mapped_column(String(200))
     target: Mapped[str] = mapped_column(String(80))
-    indications: Mapped[list] = mapped_column(JSON, default=list)
-    criteria: Mapped[list] = mapped_column(JSON, default=list)   # working copy (users can add/edit/remove)
-    weights: Mapped[dict] = mapped_column(JSON, default=dict)    # {criterion_key: percent}
-    ai_scores: Mapped[dict] = mapped_column(JSON, default=dict)  # {indication: {criterion_key: 1..5 | null}}
+    indications: Mapped[list] = mapped_column(JSONType, default=list)
+    criteria: Mapped[list] = mapped_column(JSONType, default=list)   # working copy (users can add/edit/remove)
+    weights: Mapped[dict] = mapped_column(JSONType, default=dict)    # {criterion_key: percent}
+    ai_scores: Mapped[dict] = mapped_column(JSONType, default=dict)  # {indication: {criterion_key: 1..5 | null}}
     status: Mapped[str] = mapped_column(String(20), default="Draft")
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=now)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=now, onupdate=now)
@@ -310,9 +316,9 @@ class Scenario(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     assessment_id: Mapped[int] = mapped_column(ForeignKey("assessments.id"), index=True)
     name: Mapped[str] = mapped_column(String(120))
-    weights: Mapped[dict] = mapped_column(JSON)
-    overrides: Mapped[dict] = mapped_column(JSON, default=dict)  # snapshot of the overrides at save time
-    ranking: Mapped[list] = mapped_column(JSON, default=list)
+    weights: Mapped[dict] = mapped_column(JSONType)
+    overrides: Mapped[dict] = mapped_column(JSONType, default=dict)  # snapshot of the overrides at save time
+    ranking: Mapped[list] = mapped_column(JSONType, default=list)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=now)
 
 
@@ -326,7 +332,7 @@ class Connector(Base):
     health: Mapped[str] = mapped_column(String(20), default="Healthy")  # Healthy|Warning|Failed
     license: Mapped[str] = mapped_column(String(20), default="Open")    # Open|Licensed
     last_sync: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
-    config: Mapped[dict] = mapped_column(JSON, default=dict)            # non-secret config only
+    config: Mapped[dict] = mapped_column(JSONType, default=dict)            # non-secret config only
     secret_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)  # pointer into a vault
 
 
@@ -338,7 +344,7 @@ class AdminRecord(Base):
     name: Mapped[str] = mapped_column(String(200))
     status: Mapped[str] = mapped_column(String(20), default="Draft")
     version: Mapped[str] = mapped_column(String(20), default="v1")
-    data: Mapped[dict] = mapped_column(JSON, default=dict)
+    data: Mapped[dict] = mapped_column(JSONType, default=dict)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=now, onupdate=now)
 
 
@@ -360,8 +366,8 @@ class AuditLog(Base):
     action: Mapped[str] = mapped_column(String(300))
     entity: Mapped[str] = mapped_column(String(40), default="")
     entity_id: Mapped[str] = mapped_column(String(40), default="")
-    before: Mapped[dict | None] = mapped_column(JSON, nullable=True)
-    after: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    before: Mapped[dict | None] = mapped_column(JSONType, nullable=True)
+    after: Mapped[dict | None] = mapped_column(JSONType, nullable=True)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=now, index=True)
 
 

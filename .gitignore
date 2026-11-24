@@ -3,3 +3,4 @@ venv/
 .env.example
 gilead.db
 test.db 
+.env

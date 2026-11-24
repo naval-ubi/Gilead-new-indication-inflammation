@@ -37,16 +37,19 @@ Admin and connector settings), `sam.patel@example.com` (Reviewer).
 * **CORS:** `http://localhost:5173` and `http://localhost:3000` are allowed. If your dev server uses another port,
   add it to `CORS_ORIGINS` in `.env` (comma-separated) and restart.
 * **Sample data:** with `SEED_SAMPLE_DATA=true` (already set in `.env.example`) the first start fills every screen
-  for `swanik@example.com`: completed, in-progress, paused and failed runs; conversations with follow-ups; a report with a changed
-  workflow; saved, shared, archived and versioned workspace items with notes; an assessment with overrides and
-  scenarios; read and unread notifications; History entries spread over six weeks. Already set up without it? Run
-  `python -m app.seed_samples` once. Answer and report text is clearly labelled sample content; links in references
-  point to public search pages, and some references deliberately have no link.
+  for `swanik@example.com`: Drug Pipeline and Competitive Insights runs (completed, in progress, paused, failed);
+  conversations with a follow-up and a changed workflow; saved, shared, archived and versioned workspace items with
+  notes; an assessment with overrides and scenarios; read and unread notifications; History entries spread over six
+  weeks. Already set up without it? Run `python -m app.seed_samples` once. Sample runs never call the AI service, so
+  they have no AI text (pipeline `summary` is null, report sections have tables but no text) and there are no sample
+  AI Search runs: ask a question with the AI service configured to get real answers. Samples from earlier versions
+  (placeholder text) are removed automatically.
 * **Start over:** stop the server, delete `gilead.db`, start again. It is recreated with demo and sample data.
 * **Get the latest API:** `git pull`, then `pip install -r requirements.txt` and restart. Your database is upgraded
   automatically on start.
-* **Placeholder content:** research answers, report text and AI Rephrase return placeholder text until the real AI
-  and data sources are connected. Build against the response *structure* (field names and types), not the wording.
+* **AI content is real or absent, never made up:** answers, pipeline summaries, report text and AI Rephrase come
+  from the AI Scientific Search service (see below). Without it, runs fail with a clear reason and AI Rephrase
+  returns 503. `follow_ups` is always empty (hide the chips). AI scores in Scoring start as Missing (null).
 * **Run progress:** prefer polling `GET /runs/{id}` (about once a second). Stop polling when `stalled` is true (an
   "In Progress" run with no progress for 15 minutes, e.g. after a server restart) and offer Resume. `GET /runs/{id}/events` (live stream)
   works locally but may not be available in every cloud deployment.
@@ -74,7 +77,8 @@ React/Vue SPA ──HTTPS/JWT──▶ FastAPI (app/main.py, /api/v1)
                                ├─ routers/   thin HTTP layer + validation + permissions
                                ├─ services/  scoring.py, pipeline.py  (PURE, unit-tested)
                                │             orchestrator.py          (resumable run engine)
-                               │             integrations.py          (LLMClient + Connector seams)
+                               │             scientific_search.py     (AI Scientific Search service client)
+                               │             integrations.py          (data-source connector seam, scope check)
                                └─ db/        SQLAlchemy 2.0 → PostgreSQL (SQLite for dev)
 Background: FastAPI BackgroundTasks now → Arq/Celery worker later (same execute_run(run_id))
 ```
@@ -87,8 +91,9 @@ Key decisions
 2. **Saved ≠ rerun.** `POST /runs/{id}/save` freezes question + context + result into `WorkspaceItem.snapshot`;
    reopening returns the snapshot (matches "Reopening does not rerun the research").
 3. **Scoring math is a pure module** (`services/scoring.py`) – identical to the prototype's formula, tested.
-4. **Everything external is behind two interfaces** (`LLMClient`, `BaseConnector`). Stubs ship so the API runs
-   offline; one real class per source replaces each stub. A failing connector never fails a run.
+4. **Everything external is behind clear seams**: AI content through `services/scientific_search.py` (the AI
+   Scientific Search service), data sources through `BaseConnector` (`services/integrations.py`). Nothing is
+   invented when a dependency is missing: the run fails with the reason and can be retried.
 5. **Admin switches are enforced server-side**: a disabled connector is excluded from every query.
 6. **RBAC** by role → permission set (`core/deps.py`), plus per-item ownership/share checks in Workspace.
 7. **Audit log** for admin edits, overrides, approvals, deletes (before/after JSON).
@@ -184,7 +189,7 @@ Reference PDFs in `docs/` (regenerate after API or model changes; needs `pip ins
   `revoked_tokens` and every authenticated call rejects it with 401. Other sessions of the same user stay signed in.
   `/me` and the login response now include `permissions`.
 * **Schema**: `revoked_tokens` table; `runs.thread_id`, `runs.notify`, `runs.workflow`. On start-up `add_missing_columns()` adds them to an
-  existing dev database; use Alembic for real deployments. `seed_reference()` idempotently adds the 5 workflows,
+  existing dev database; PostgreSQL uses Alembic migrations (see "Using PostgreSQL"). `seed_reference()` idempotently adds the 5 workflows,
   5 report templates and prompt metadata.
 
 Workspace item search (`q`) is case-insensitive and matches the item title,
@@ -202,21 +207,96 @@ pytest                                  # test_scoring.py is framework-free; tes
 Demo logins (password `ChangeMe123!`): `swanik@example.com` (Analyst), `maria.chen@example.com` (Admin),
 `sam.patel@example.com` (Reviewer).
 
-## 5. What is real vs. stubbed (be aware before going live)
+### AI Scientific Search service
+
+All AI-written content comes from the AI team's **AI Scientific Search** service (AWS API Gateway): AI Search
+answers, Drug Pipeline summaries, Competitive Insights report text, and AI Rephrase in every module. Set its base URL in `.env` (ask the AI team; do not commit it, the service has no API key):
+```bash
+AI_SEARCH_BASE_URL=https://<api-id>.execute-api.ap-south-1.amazonaws.com
+AI_SEARCH_TIMEOUT_SECONDS=90       # a search takes about 10-15 seconds
+```
+| Service endpoint | Used for |
+|---|---|
+| `POST /scientific-search/query` `{"query"}` | The search stage of every run (AI Search answer, Pipeline summary); for Competitive Insights also one call per report section, run 3 at a time |
+| `POST /scientific-search/rephrase` `{"query"}` | AI Rephrase on every ask box (`POST /api/v1/prompts/rephrase`) |
+| `GET /health` | `GET /health/dependencies` (monitoring) |
+
+* The frontend contract does not change. The service's `[S1]` citations become `[1]`, matching `references[].number`;
+  references also carry `doi`, `journal`, `publication_date`, `record_id`. Results include `provider`
+  (`ai_scientific_search`; null for sample runs) and `retrieved_passages`.
+* Errors and timeouts mark the run **Failed** with the service's message; **Retry** (resume) calls it again.
+  Gateway errors (502/503/504) are retried once automatically; timeouts are not (to avoid paying twice).
+  If AI Rephrase is unavailable the endpoint returns 503.
+* Out-of-scope questions are answered locally and never sent to the service.
+* Without `AI_SEARCH_BASE_URL` runs fail with "The AI Scientific Search service is not configured" and AI Rephrase
+  returns 503. Sample data never calls the service; tests use a recorded reply (`tests/fixtures/ai_search_query.json`).
+* Follow-up questions are sent on their own: the service does not keep conversation history. It does not suggest
+  follow-ups, so `follow_ups` is empty.
+* If a Competitive Insights report section fails, the run fails; **Retry** writes only the missing sections.
+* The service cannot score indications yet (scoring questions return 500 on its side), so AI scores start as
+  Missing and users enter scores as overrides. `scoring.ai_recommend_scores` is the place to connect a scoring endpoint.
+
+### Using PostgreSQL
+
+SQLite (`gilead.db`) is the default for local development. Shared environments use PostgreSQL.
+
+| | SQLite (default) | PostgreSQL |
+|---|---|---|
+| Schema on start-up | `app/db/upgrade.py` (automatic, converts older databases) | Alembic migrations in `migrations/versions/` |
+| JSON columns | JSON | JSONB |
+| Text length limits | not enforced | enforced (inputs are validated to fit) |
+
+**Start a local PostgreSQL** (or use your own server):
+```bash
+docker compose up -d db        # PostgreSQL 16 on localhost:5432, user/password/db: gilead (local use only)
+```
+
+**Move existing SQLite data into it** (the SQLite file is never changed):
+```bash
+python -m app.db.sqlite_to_postgres --target postgresql+psycopg://gilead:gilead@localhost:5432/gilead --check
+python -m app.db.sqlite_to_postgres --target postgresql+psycopg://gilead:gilead@localhost:5432/gilead
+```
+It upgrades a temporary copy of the SQLite file to the current schema, checks the data fits PostgreSQL's column
+limits, applies the migrations, copies all tables in one transaction (all or nothing), resets id sequences and compares
+every row. The target must be empty; `--replace` empties it first (deletes its data).
+
+**Point the API at it** in `.env`, then start as usual (migrations run on start-up):
+```bash
+DATABASE_URL=postgresql+psycopg://gilead:gilead@localhost:5432/gilead
+SEED_SAMPLE_DATA=false          # shared environments: no sample activity
+```
+Starting the API on an empty PostgreSQL database creates the schema and reference data (roles, permissions,
+indications) by itself; the copy step is only needed to keep existing data.
+
+**Schema changes** (PostgreSQL): edit `app/db/models.py`, then
+```bash
+alembic revision --autogenerate -m "describe the change"   # review the generated file in migrations/versions/
+alembic upgrade head                                        # or just restart the API
+alembic check                                               # fails if models changed without a migration
+```
+
+**Tests on PostgreSQL**: `TEST_DATABASE_URL=postgresql+psycopg://user:pass@localhost:5432/gilead_test pytest`
+(uses an empty test database and drops its contents; the SQLite-to-PostgreSQL tests run only in this mode).
+
+## 5. What is real and what is still missing (be aware before going live)
 
 | Area | State |
 |---|---|
 | Scoring, pipeline aggregations, weights validation, overrides, scenarios, sensitivity | Implemented + unit-tested |
 | Auth (JWT + logout revocation), profile, RBAC, audit, workspace sharing/versions, history, admin CRUD, connector toggle | Implemented |
 | Run engine (steps, cancel/pause/resume, notifications, SSE) | Implemented |
-| **LLM answers, evidence retrieval, Competitive Insights section content, AI scores, exports (PDF/PPT/Excel)** | **Stubs** – wire `integrations.py`, `orchestrator.build_*`, `scoring.ai_recommend_scores`. `/runs/{id}/report` returns render-ready report JSON; PDF rendering is still client-side as in the prototype |
-| AI Rephrase, scope guardrail, follow-up suggestions | Stubs over curated questions (`integrations.rephrase_prompt`, `in_scope`, `suggest_follow_ups`) – replace with LLM calls |
-| Connector clients (PubMed, Citeline, IQVIA …) and secret storage | Stubs – store credentials in a vault, keep only `secret_ref` in DB |
+| AI Search answers, Pipeline summaries, Competitive Insights report text, AI Rephrase | **Real** via the AI Scientific Search service (`AI_SEARCH_BASE_URL`); fails clearly without it |
+| Pipeline tables, charts and report statistics | **Real** database content (`pipeline_programs` and lookups) |
+| Scope guardrail | Keyword check (`integrations.in_scope`) so off-topic questions are not sent to the billed service |
+| **AI scores** | **Missing** until the AI service can score (`scoring.ai_recommend_scores`) |
+| **Follow-up suggestions** | **None**: the service does not provide them (`follow_ups` is empty) |
+| **Connector clients (PubMed, Citeline, IQVIA …) and secret storage** | **Not connected**: Test reports "No client is connected"; register a `BaseConnector` per source, keep credentials in a vault and only `secret_ref` in the DB |
+| Exports (PDF/PPT/Excel) | `/runs/{id}/report` returns render-ready report JSON; PDF rendering is client-side as in the prototype |
 
 ## 6. Suggested build order
 
 1. Run as-is, point the SPA at `/api/v1` (replace each `localStorage`/array with a call).
-2. Real connectors for 2–3 sources (PubMed, ClinicalTrials.gov, Open Targets – all open APIs) + a real `LLMClient`.
-3. Implement the AI Search synthesis with citations → then CIOA agents → then exports.
-4. Move runs to Arq/Celery + Redis; add Alembic migrations; replace `JSON` with `JSONB` on Postgres.
+2. Real connectors for 2–3 sources (PubMed, ClinicalTrials.gov, Open Targets – all open APIs).
+3. A scoring endpoint from the AI team for AI scores → then exports.
+4. Move runs to Arq/Celery + Redis. (Alembic migrations and JSONB on PostgreSQL are in place.)
 5. SSO (OIDC/SAML) instead of local passwords; rate limits; per-source licence enforcement; structured logging.

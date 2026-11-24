@@ -1,0 +1,22 @@
+# Local PostgreSQL for development:  docker compose up -d db
+# Then in .env:  DATABASE_URL=postgresql+psycopg://gilead:gilead@localhost:5432/gilead
+# Local use only: change the password for any shared environment.
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: gilead
+      POSTGRES_PASSWORD: gilead
+      POSTGRES_DB: gilead
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gilead -d gilead"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  pgdata:

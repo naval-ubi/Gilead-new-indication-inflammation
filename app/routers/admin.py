@@ -82,11 +82,14 @@ def test(cid: int, db: DB, user: m.User = Depends(require("administer"))):
     c = db.get(m.Connector, cid)
     if not c:
         raise HTTPException(404, "Not found")
-    ok, detail = get_connector(c.name).health()
+    client = get_connector(c.name)
+    if client is None:  # no client built for this source yet: report it, do not mark the source as broken
+        return {"ok": False, "detail": "No client is connected for this source yet", "status": c.health, "connected": False}
+    ok, detail = client.health()
     c.health = "Healthy" if ok else "Failed"
     c.last_sync = datetime.now(timezone.utc) if ok else c.last_sync
     db.commit()
-    return {"ok": ok, "detail": detail, "status": c.health}
+    return {"ok": ok, "detail": detail, "status": c.health, "connected": True}
 
 
 # =============================================================== ADMIN
@@ -118,8 +121,8 @@ def overview(db: DB, user: m.User = Depends(require("administer"))):
 
 # ---- users
 class UserIn(BaseModel):
-    name: str
-    email: str
+    name: str = Field(min_length=1, max_length=120)
+    email: str = Field(min_length=3, max_length=200)
     role: str = "Analyst"           # a name from GET /admin/roles
     groups: list[str] = []
     status: Literal["Active", "Inactive"] = "Active"
@@ -219,7 +222,7 @@ def set_role_permissions(rid: int, body: RolePermsIn, db: DB, user: m.User = Dep
 
 class GroupIn(BaseModel):
     name: str = Field(min_length=1, max_length=80)
-    description: str = ""
+    description: str = Field(default="", max_length=200)
 
 
 def g_out(g: m.Group, members: int) -> dict:
@@ -277,9 +280,9 @@ def delete_group(gid: int, db: DB, user: m.User = Depends(require("administer"))
 
 # ---- generic config records (workflows / templates / prompts)
 class RecordIn(BaseModel):
-    name: str
+    name: str = Field(min_length=1, max_length=200)
     status: Literal["Draft", "Published", "Inactive"] = "Draft"
-    version: str = "v1"
+    version: str = Field(default="v1", max_length=20)
     data: dict = {}
 
 
@@ -332,8 +335,8 @@ def deactivate(kind: str, rid: int, db: DB, user: m.User = Depends(require("admi
 
 # ---- scoring models (admin-managed templates consumed by /scoring)
 class ModelIn(BaseModel):
-    name: str
-    version: str = "v1"
+    name: str = Field(min_length=1, max_length=160)
+    version: str = Field(default="v1", max_length=20)
     status: Literal["Draft", "Published", "Inactive"] = "Draft"
     criteria: list[dict]
 

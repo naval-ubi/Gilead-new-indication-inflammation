@@ -5,13 +5,13 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
 from app.db.base import SessionLocal, engine
-from app.db.upgrade import upgrade_schema
+from app.db.migrate import prepare_database
 from app.routers import account, admin, runs, scoring, workspace
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    upgrade_schema(engine)            # create tables, reference data, convert older databases (use Alembic in prod)
+    prepare_database(engine)          # PostgreSQL: Alembic migrations · SQLite (dev): automatic upgrade
     if settings.seed_demo_data:
         from app.seed import seed, seed_reference
         with SessionLocal() as db:
@@ -35,3 +35,12 @@ for r in (account.router, runs.router, workspace.router, scoring.router, admin.r
 @app.get("/health", tags=["ops"])
 def health():
     return {"status": "ok"}
+
+
+@app.get("/health/dependencies", tags=["ops"])
+def health_dependencies():
+    """Status of external services this API relies on (for monitoring and the Data Connectors page)."""
+    from app.services import scientific_search
+    ai = scientific_search.health() if settings.ai_search_base_url else {"configured": False, "ok": None,
+                                                                        "detail": "AI_SEARCH_BASE_URL is not set: research runs fail and AI Rephrase returns 503"}
+    return {"ai_scientific_search": ai}

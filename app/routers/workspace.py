@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Literal
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select
 
 from app.core.deps import DB, CurrentUser, audit, require
@@ -181,8 +181,8 @@ def item_detail(item_id: int, db: DB, user: CurrentUser):
 
 
 class ItemPatch(BaseModel):
-    title: str | None = None
-    folder: str | None = None
+    title: str | None = Field(default=None, max_length=300)
+    folder: str | None = Field(default=None, max_length=120)
     archived: bool | None = None
 
 

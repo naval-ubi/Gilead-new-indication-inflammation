@@ -21,11 +21,11 @@ from sqlalchemy import select
 from app.core.deps import DB, CurrentUser, audit, require
 from app.db import models as m
 from app.db.base import SessionLocal
-from app.services import catalog
+from app.services import catalog, scientific_search
 from app.services import pipeline as pl
-from app.services.integrations import improve_prompt, rephrase_prompt, words
+from app.services.integrations import words
 from app.services.orchestrator import (CAPABILITIES, elapsed_seconds, execute_run, is_stalled, pipeline_views,
-                                       plan_steps, query_assets, resolve_sources)
+                                       plan_steps, query_assets)
 
 router = APIRouter(tags=["research"])
 
@@ -96,7 +96,8 @@ def own_run(db, run_id: int, user: m.User) -> m.Run:
 def start_run(db, bg: BackgroundTasks, user: m.User, *, module: str, question: str, mode: str, params: dict,
               workflow: str = "", parent: m.Run | None = None, notify: bool = False, title: str | None = None) -> m.Run:
     """Single place that creates + schedules a run (used by POST /runs, rerun, change-workflow, workspace rerun)."""
-    params = {**params, "resolved_sources": resolve_sources(db, module, params.get("sources"))}
+    params = {k: v for k, v in params.items() if k not in ("resolved_sources", "ai_service")}  # v0.4 fields
+    params["ai_offline"] = scientific_search.is_offline()   # sample data only: no AI text, no service calls
     run = m.Run(user_id=user.id, module=module, kind=KIND[module], question=question, mode=mode,
                 title=title or (question if len(question) <= 70 else question[:67] + "..."),
                 project=params.get("context", {}).get("session", ""), params=params, workflow=workflow,
@@ -231,6 +232,7 @@ def resume(run_id: int, bg: BackgroundTasks, db: DB, user: m.User = Depends(requ
     if not (r.status in ("Paused", "Failed") or is_stalled(r)):
         raise HTTPException(409, f"Cannot resume a run that is {r.status}")
     r.status = "In Progress"
+    r.params = {**(r.params or {}), "ai_offline": scientific_search.is_offline()}  # a sample run resumed by a user uses the AI service
     db.commit()
     bg.add_task(execute_run, r.id)  # re-enters at persisted step_index with persisted partial output
     return run_out(r)
@@ -269,8 +271,8 @@ def change_workflow(run_id: int, body: WorkflowIn, bg: BackgroundTasks, db: DB, 
 
 
 class SaveIn(BaseModel):
-    folder: str = ""
-    title: str | None = None
+    folder: str = Field(default="", max_length=120)
+    title: str | None = Field(default=None, max_length=300)
 
 
 @router.post("/runs/{run_id}/save")
@@ -331,8 +333,7 @@ def full_report(run_id: int, db: DB, user: CurrentUser):
                  ["More filters", f"{mf} applied" if mf else "None"],
                  ["Sources searched", ", ".join(rs.get("sources_searched") or res.get("sources_used") or [])],
                  ["Generated", "AI Assistant"], ["Report ID", f"CI-{r.id:06d}"]],
-        "notice": "Illustrative content. Verify every figure, program status and citation against primary sources before use."
-                  if res.get("illustrative") else None,
+        "notice": None if res.get("provider") else "This report has no AI-written text (sample data).",
         "at_a_glance": res.get("stats", []),
         "key_takeaways": res.get("key_takeaways", []),
         "contents": [s["title"] for s in res.get("sections", [])],
@@ -354,12 +355,21 @@ class SuggestIn(BaseModel):
     text: str
 
 
+def _service_rephrase(text: str) -> str:
+    if not scientific_search.configured():
+        raise HTTPException(503, "AI Rephrase is unavailable: the AI Scientific Search service is not configured")
+    try:
+        return scientific_search.rephrase(text)
+    except scientific_search.ScientificSearchError as e:
+        raise HTTPException(503, f"AI Rephrase is unavailable right now: {e}")
+
+
 @router.post("/prompts/suggest")
 def suggest(body: SuggestIn, user: CurrentUser):
-    """'AI Suggestion ... Use It' - shown by the UI once the user has typed >= 2 words."""
+    """Legacy 'AI Suggestion' (previous UI): same as AI Rephrase. Returns null for fewer than 2 words."""
     if words(body.text) < 2:
         return {"suggestion": None}
-    return {"suggestion": improve_prompt(body.text)}
+    return {"suggestion": _service_rephrase(body.text)}
 
 
 class RephraseIn(BaseModel):
@@ -369,10 +379,11 @@ class RephraseIn(BaseModel):
 
 @router.post("/prompts/rephrase")
 def rephrase(body: RephraseIn, user: CurrentUser):
-    """'AI Rephrase' button on every ask box: rewrites the question in more detail. The user reviews it, then submits."""
+    """'AI Rephrase' button on every ask box: the AI Scientific Search service rewrites the question; the user
+    reviews it, then submits. 503 when the service is not configured or not answering."""
     if not body.text.strip():
         raise HTTPException(422, "Type a question first, then use AI Rephrase")
-    return {"original": body.text, "rephrased": rephrase_prompt(body.text, body.module)}
+    return {"original": body.text, "rephrased": _service_rephrase(body.text)}
 
 
 @router.get("/prompts/suggested")
@@ -393,7 +404,7 @@ def cioa_options(user: CurrentUser):
     return {"therapeutic_areas": list(catalog.THERAPEUTIC_AREAS), "indications_by_area": catalog.THERAPEUTIC_AREAS,
             "all_indications": catalog.CORE_INDICATIONS + catalog.ADDITIONAL_INDICATIONS,
             "molecular_targets": catalog.MOLECULAR_TARGET_GROUPS, "default_therapeutic_area": catalog.DEFAULT_THERAPEUTIC_AREA,
-            "example_questions": catalog.STARTER_QUESTIONS["cioa"]}
+            "example_questions": catalog.CIOA_EXAMPLE_QUESTIONS}
 
 
 @router.get("/cioa/workflows")

@@ -127,7 +127,7 @@ COL = {
                        "criteria": "Criteria with scale definitions and default weights."},
     "assessments": {"owner_id": "Owner.", "model_id": "Template it was created from.", "title": "Assessment name.", "target": "Molecular target, e.g. IRAK4.",
                     "indications": "Indications being ranked (codes, e.g. SLE).", "criteria": "Working copy of criteria (users can add / edit / remove).",
-                    "weights": "Percent per criterion; must total 100.", "ai_scores": "AI-recommended 1-5 scores (null = insufficient evidence).",
+                    "weights": "Percent per criterion; must total 100.", "ai_scores": "AI-recommended 1-5 scores (null = Missing; the AI service cannot score yet).",
                     "status": "Draft | Saved."},
     "assessment_overrides": {"assessment_id": "Assessment.", "indication": "Indication code from the assessment.",
                              "criterion_key": "Criterion key from the assessment.", "score": "1-5; null = marked as Missing.",
@@ -156,7 +156,7 @@ JSON_SHAPES = [
     ("runs.params", '{"context": {...}, "sources": [..]|null, "resolved_sources": [..], "filters": {"target","indication","modality","stage"}, "more_filters": {"status","phase":[..],...}, "workflow": "competitive", "therapeutic_area": "...", "indications": [..], "molecular_target": "..."}'),
     ("runs.steps", '[{"name": "Search literature", "status": "pending|active|done|failed|skipped", "items": [{"label": "PubMed", "status": "done"}]}]'),
     ("runs.result (running)", '{"_work": {"activity": [..], "findings": [{"text","source","evidence":{"key","label"},"preliminary":true}], "records": [..], "errors": [..]}}'),
-    ("runs.result (AI, completed)", '{"relevant": true, "answer": "...", "key_findings": [..], "top_sources": [{"name","url"}], "references": [..], "follow_ups": [..], "research_summary": {"stage_count","stages","sources_searched","elapsed_seconds"}}'),
+    ("runs.result (AI, completed)", '{"relevant": true, "answer": "...", "key_findings": [..], "top_sources": [{"name","url"}], "references": [..], "follow_ups": [], "provider": "ai_scientific_search", "research_summary": {"stage_count","stages","sources_searched","elapsed_seconds"}}'),
     ("runs.result (Competitive Insights)", '{"workflow": {"key","name","short","icon"}, "context": {...}, "stats": [{"value","label","icon"}], "key_takeaways": [..], "sections": [{"index","title","bullets":[..],"table":null}], "data_sources": [..]}'),
     ("scoring_models.criteria / assessments.criteria", '[{"key": "unmet_need", "name": "Unmet Need", "rule": "1-5 based on ...", "scale": {"1": "...", "3": "...", "5": "..."}, "weight": 20}]'),
     ("assessments.weights", '{"population": 20, "unmet_need": 20, ...}   (must total 100)'),
@@ -438,15 +438,16 @@ story += [Paragraph("2. Conventions", H2), grid([[P(a, CELLB), P(b)] for a, b in
                    "the app treats naive values as UTC."),
     ("Enumerations", "Small fixed vocabularies (status, module, stage, permission level) are short strings validated by the API."),
     ("JSON columns", "Flexible, module-specific payloads (run results, context, scoring weights). Anything filtered or sorted on "
-                     "is a real column. Use JSONB on PostgreSQL."),
+                     "is a real column. They are JSONB on PostgreSQL."),
     ("Soft delete", f"{mono('runs.deleted')} hides history rows; {mono('workspace_items.archived')} is the Archived tab. "
                     "Workspace item delete is a hard delete with an audit entry."),
     ("Delete behaviour", "No ON DELETE rules in the database. Child rows of workspace items (versions, shares, notes) and of "
                          "assessments (overrides, scenarios) are deleted by the ORM cascade. Deleting a user, run, group or "
                          "lookup row that is still referenced fails; deactivate users, and empty a group before deleting it."),
     ("Logical links", f"{mono('runs.thread_id')} groups conversation turns but has no foreign key (it can equal the row's own id)."),
-    ("Upgrades", f"{mono('app/db/upgrade.py')} runs on every start-up: creates new tables, ensures roles, permissions and "
-                 "indications exist, and converts databases from earlier versions in place (see section 3)."),
+    ("Upgrades", "On PostgreSQL the API applies Alembic migrations on start-up (section 8.8). On SQLite (local "
+                 f"development) {mono('app/db/upgrade.py')} creates new tables and converts older databases in place. Both "
+                 "make sure roles, permissions and indications exist."),
 ]], (30 * mm, 144 * mm), head=False), PageBreak()]
 
 story += [Paragraph("3. Normalisation decisions (v0.4)", H2),
@@ -519,7 +520,8 @@ DATABASE_URL=postgresql+psycopg://gilead:<password>@localhost:5432/gilead
 SEED_DEMO_DATA=false
 """),
           Paragraph("8.2 Create or upgrade the schema", H3),
-          P(f"Starting the API does this automatically through {mono('upgrade_schema()')} in {mono('app/db/upgrade.py')}: it "
+          P("Starting the API does this automatically. On PostgreSQL it applies the Alembic migrations (8.8). On SQLite it "
+            f"uses {mono('upgrade_schema()')} in {mono('app/db/upgrade.py')}, which "
             "creates missing tables, makes sure roles, permissions and indications exist (also in production), converts "
             "databases from earlier versions in place (role/groups, shares, pipeline assets, overrides), and adds newer "
             "columns and indexes. It is safe to run repeatedly. Demo and workflow data are seeded afterwards when enabled.", BODY),
@@ -606,18 +608,16 @@ psql -U postgres -c "CREATE DATABASE gilead OWNER gilead;"
 psql "postgresql://gilead:<password>@localhost:5432/gilead" -c "\\dt"     # list tables
 psql ... -c "\\d+ runs"                                                   # describe a table
 """),
-          Paragraph("8.8 Migrations with Alembic (recommended for staging / production)", H3),
-          P(f"{mono('add_missing_columns()')} only adds nullable or defaulted columns and missing indexes; it never renames, "
-            "drops or changes types. Use Alembic for anything beyond development.", BODY),
+          Paragraph("8.8 Schema changes on PostgreSQL (Alembic)", H3),
+          P(f"On PostgreSQL the API applies the migrations in {mono('migrations/versions/')} on start-up (one instance at a "
+            "time). To change the schema: edit the models, create a migration, review it, then commit it with the code.", BODY),
           code("""
-alembic init migrations
-# migrations/env.py:  import app.db.models; from app.db.base import Base; target_metadata = Base.metadata
-#                     config.set_main_option("sqlalchemy.url", settings.database_url)
-alembic revision --autogenerate -m "baseline"
-alembic upgrade head            # apply
+alembic revision --autogenerate -m "add folders table"   # write a migration from model changes; review the file
+alembic upgrade head            # apply (also happens on API start-up)
 alembic downgrade -1            # roll back one revision
 alembic current                 # show the applied revision
-alembic stamp head              # mark an existing database as up to date without running migrations
+alembic check                   # fails if the models changed without a migration
+alembic upgrade head --sql      # print the SQL instead of running it (for DBA review)
 """),
           Paragraph("8.9 Backup and restore", H3),
           code("""
@@ -630,11 +630,17 @@ pg_dump -Fc -d gilead -f gilead-$(date +%F).dump
 pg_restore --clean --if-exists -d gilead gilead-2026-11-20.dump
 """),
           Paragraph("8.10 Moving from SQLite to PostgreSQL", H3),
-          P(f"Create the schema on PostgreSQL (8.2 with the new {mono('DATABASE_URL')}, {mono('SEED_DEMO_DATA=false')}). The "
-            "upgrade step fills roles, permissions and indications, so copy those tables with care for duplicates (or empty "
-            "them first). Copy rows table by table in this dependency order: "
-            f"{mono(', '.join(t.name for t in Base.metadata.sorted_tables))}. Afterwards reset each sequence, e.g. "
-            f"{mono("SELECT setval(pg_get_serial_sequence('runs', 'id'), MAX(id)) FROM runs;")},"" and change JSON columns to JSONB.", BODY)]
+          P(f"{mono('app/db/sqlite_to_postgres.py')} copies a SQLite database into PostgreSQL. It works on a temporary copy "
+            "of the SQLite file (the original is never changed), brings it to the current schema, checks the data fits "
+            "PostgreSQL's column limits, applies the migrations to the target, copies every table in one transaction, "
+            "resets the id sequences and compares every row. The target must be empty unless --replace is given.", BODY),
+          code("""
+docker compose up -d db                                   # or use your own PostgreSQL server
+python -m app.db.sqlite_to_postgres --target postgresql+psycopg://gilead:gilead@localhost:5432/gilead --check
+python -m app.db.sqlite_to_postgres --target postgresql+psycopg://gilead:gilead@localhost:5432/gilead
+# then in .env:  DATABASE_URL=postgresql+psycopg://gilead:gilead@localhost:5432/gilead
+"""),
+          P(f"Tables are copied in this order: {mono(', '.join(t.name for t in Base.metadata.sorted_tables))}.", BODY)]
 
 # ------------------------------------------------------------------------------------------- DDL appendix
 pg = postgresql.dialect()
@@ -644,8 +650,8 @@ for t in Base.metadata.sorted_tables:
     for i in sorted(t.indexes, key=lambda i: i.name):
         ddl.append(str(CreateIndex(i).compile(dialect=pg)).strip() + ";")
 story += [PageBreak(), Paragraph("Appendix A · PostgreSQL DDL", H2),
-          Paragraph("CREATE statements for every table and index, parent tables first. "
-                    "For production, replace JSON with JSONB and manage changes with Alembic.", INTRO),
+          Paragraph("CREATE statements for every table and index, parent tables first, as created by the baseline "
+                    "migration. JSON columns are JSONB on PostgreSQL.", INTRO),
           code("\n\n".join(ddl), DDL)]
 
 

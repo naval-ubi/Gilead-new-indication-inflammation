@@ -18,10 +18,11 @@ router = APIRouter(prefix="/scoring", tags=["scoring"])
 
 
 def ai_recommend_scores(target: str, indication: str, criteria: list[dict]) -> dict:
-    """Stub for the AI scoring agent. Real version: gather evidence per criterion (epidemiology, pipeline, payer,
-    WAC benchmarks) and map it onto the 1-5 scale definition. Return None for 'insufficient evidence'."""
-    demo = {"SLE": [3, 5, 4, 3, 4], "RA": [5, 2, 1, 4, 2], "AD": [5, 3, 2, 3, 2]}.get(indication)
-    return {c["key"]: (demo[i] if demo and i < len(demo) else None) for i, c in enumerate(criteria)}
+    """AI-recommended 1-5 score per criterion. The AI Scientific Search service has no scoring capability yet (it
+    answers literature questions, and scoring questions currently fail on its side), so every score starts as None
+    ('Missing') and users enter scores as overrides with a justification. Connect a scoring endpoint here when the
+    AI team provides one; nothing is made up meanwhile."""
+    return {c["key"]: None for c in criteria}
 
 
 def load(db, aid: int, user: m.User, need_owner: bool = False) -> m.Assessment:

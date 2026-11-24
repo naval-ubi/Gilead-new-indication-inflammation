@@ -11,6 +11,10 @@ class Settings(BaseSettings):
     cors_origins: str = "http://localhost:5173,http://localhost:3000"
     seed_demo_data: bool = True
     seed_sample_data: bool = False   # frontend testing: runs, saved items, sharing, scoring (app/seed_samples.py)
+    # AI Scientific Search service (AWS API Gateway). Empty = research runs fail with "not configured"; AI Rephrase 503.
+    ai_search_base_url: str = ""
+    ai_search_timeout_seconds: float = 90
+    ai_search_api_key: str = ""      # only if the gateway is protected with an API key (sent as x-api-key)
 
     @property
     def cors_list(self) -> list[str]:

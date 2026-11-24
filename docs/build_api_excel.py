@@ -1,6 +1,9 @@
 """Builds docs/API_Handover.xlsx: every endpoint with its screen, permission, description, and a real sample request
-and response. Samples come from calling the API against a temporary copy of gilead.db (which holds the sample
-data), so they match what the frontend receives. gilead.db itself is not modified.
+and response. Samples come from calling the API against a new temporary database loaded with the sample data, so
+they match what the frontend receives. gilead.db is not used or modified.
+
+The AI Scientific Search service is not called (it is billed): AI answers in the samples are a real reply recorded
+from the service (tests/fixtures/ai_search_query.json), served through a local stand-in.
 
 Usage (from the repo root; needs the project requirements and openpyxl):
     PYTHONPATH=. python docs/build_api_excel.py
@@ -9,7 +12,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -17,8 +19,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "docs" / "API_Handover.xlsx"
 TMP = Path(tempfile.mkdtemp()) / "handover.db"
-shutil.copy(ROOT / "gilead.db", TMP)
-os.environ.update(DATABASE_URL=f"sqlite:///{TMP}", SEED_DEMO_DATA="true", SEED_SAMPLE_DATA="true")
+AI_BASE = "https://ai-search.local"
+os.environ.update(DATABASE_URL=f"sqlite:///{TMP}", SEED_DEMO_DATA="true", SEED_SAMPLE_DATA="true",
+                  AI_SEARCH_BASE_URL=AI_BASE)
 
 from fastapi.testclient import TestClient  # noqa: E402
 from openpyxl import Workbook  # noqa: E402
@@ -31,6 +34,25 @@ from app.db.base import SessionLocal  # noqa: E402
 from app.main import app  # noqa: E402
 from app.services import catalog  # noqa: E402
 from app.services import pipeline as pl  # noqa: E402
+from app.services import scientific_search as ss  # noqa: E402
+
+import httpx  # noqa: E402
+
+RECORDED = json.loads((ROOT / "tests" / "fixtures" / "ai_search_query.json").read_text())
+
+
+def recorded_service(request: httpx.Request) -> httpx.Response:
+    """Local stand-in for the AI service: the recorded reply for every query, a fixed rephrasing for rephrase."""
+    if request.url.path == "/health":
+        return httpx.Response(200, json={"status": "healthy", "service": "scientific-search-api", "message": "ok"})
+    if request.url.path.endswith("/rephrase"):
+        q = json.loads(request.content)["query"]
+        return httpx.Response(200, json={"status": "success", "original_query": q, "suggested_query":
+                                         "Which biomarkers can show IRAK4 target engagement in patients with SLE, RA or AD?"})
+    return httpx.Response(200, json=RECORDED)
+
+
+ss._client = lambda: httpx.Client(base_url=AI_BASE, transport=httpx.MockTransport(recorded_service))
 
 API = "/api/v1"
 ROWS: list[dict] = []
@@ -128,19 +150,15 @@ with TestClient(app) as c:
     with SessionLocal() as db:
         sw = db.scalar(select(m.User).where(m.User.email == "swanik@example.com"))
         runs = db.scalars(select(m.Run).where(m.Run.user_id == sw.id, m.Run.deleted.is_(False)).order_by(m.Run.id)).all()
-        done = lambda mod, **w: next(r.id for r in runs if r.module == mod and r.status == "Completed"  # noqa: E731
-                                     and all(getattr(r, k) == v for k, v in w.items()))
-        ai_done = next(r.id for r in runs if r.module == "ai" and r.status == "Completed" and r.parent_run_id)
-        pipe_done, ci_done = done("pipeline"), done("cioa", workflow="competitive")
-        live = next(r.id for r in runs if r.status == "In Progress" and r.module == "ai")
+        live = max((r for r in runs if r.status == "In Progress"), key=lambda r: r.created_at).id
         # the sample "live" run is only live for 15 minutes after loading; refresh it in this temporary copy so the
         # loader example shows a healthy in-progress run (stalled=false)
         from datetime import datetime, timedelta, timezone
         db.get(m.Run, live).updated_at = datetime.now(timezone.utc) - timedelta(minutes=1)
         db.commit()
-        stalled = next(r.id for r in runs if r.status == "In Progress" and r.module == "pipeline")
+        stalled = next(r.id for r in runs if r.status == "In Progress" and r.module == "cioa")
         item = db.scalar(select(m.WorkspaceItem).where(m.WorkspaceItem.owner_id == sw.id,
-                                                       m.WorkspaceItem.title == "Role of IRAK4 in SLE, RA and AD"))
+                                                       m.WorkspaceItem.title == "IRAK4 pipeline - SLE"))
         item_id, version_id = item.id, item.versions[-1].id
         notif = db.scalar(select(m.Notification.id).where(m.Notification.user_id == sw.id).order_by(m.Notification.id.desc()))
         priya = db.scalar(select(m.User.id).where(m.User.email == "priya.nair@example.com"))
@@ -148,6 +166,11 @@ with TestClient(app) as c:
         connector = db.scalar(select(m.Connector.id).where(m.Connector.name == "PubMed"))
         prompt_id = db.scalar(select(m.AdminRecord.id).where(m.AdminRecord.kind == "prompt"))
         role_viewer = db.scalar(select(m.Role.id).where(m.Role.name == "Viewer"))
+
+    # an AI Search conversation for the samples below (answers are the recorded service reply)
+    first = c.post(API + "/runs", headers=H, json={"module": "ai", "question": "What role does IRAK4 play in SLE?"}).json()
+    ai_done = c.post(API + "/runs", headers=H, json={"module": "ai", "question": "Which biomarkers show IRAK4 target engagement?",
+                                                     "parent_run_id": first["id"]}).json()["id"]
 
     # ---- Account & platform
     mod = "Account & platform"
@@ -207,9 +230,11 @@ with TestClient(app) as c:
               "activity (live feed), emerging_findings, elapsed_seconds.",
          notes="Poll about once a second. Stop when status is Completed, Failed, Cancelled or Paused, or stalled is true.")
     call(c, "GET", f"/runs/{ai_done}/result", H, template="/runs/{run_id}/result", module=mod, screen="Answer view",
-         desc="Completed answer: answer (Markdown with [n] citations), references, top_sources (View Details), key_findings, "
-              "follow_ups, research_summary.",
-         notes="409 while the run is not Completed. relevant=false: show 'Please ask a relevant question' with message and follow_ups.")
+         desc="Completed answer: answer (Markdown; [n] citations match references[].number), references, top_sources "
+              "(View Details) with doi, journal, publication_date, key_findings, research_summary, provider.",
+         notes="409 while the run is not Completed. relevant=false: show 'Please ask a relevant question' with message. "
+               "follow_ups is always empty (the AI service does not suggest follow-ups): hide the chips. "
+               "A search takes about 10-15 s. If the AI service is not configured or fails, the run is Failed with the reason in step_label.")
     call(c, "GET", f"/runs/{ai_done}/thread", H, template="/runs/{run_id}/thread", module=mod,
          screen="Conversation view (reload / deep link)", desc="Every turn of the conversation, oldest first; completed turns include result.")
     call(c, "GET", f"/runs/{ai_done}/events", H, template="/runs/{run_id}/events", module=mod, screen="Research loader (live stream)",
@@ -230,8 +255,9 @@ with TestClient(app) as c:
          module=mod, screen="Save Prompt / Save Search", desc="Saves the question and its result to Workspace (snapshot).",
          notes="Saving the same run again returns already_saved=true. 409 if the run is not Completed.")
     call(c, "POST", "/prompts/rephrase", H, body={"text": "irak4 biomarkers target engagement", "module": "ai"}, module=mod,
-         screen="AI Rephrase button (every ask box)", desc="Rewrites the typed question in more detail; put 'rephrased' back into the input.",
-         notes="module: ai | pipeline | cioa. 422 when text is empty.")
+         screen="AI Rephrase button (every ask box)", desc="Rewrites the typed question with the AI service; put 'rephrased' back into the input.",
+         notes="module: ai | pipeline | cioa. 422 when text is empty. 503 when the AI service is not configured or not answering: "
+               "show the message and keep the user's text.")
     call(c, "POST", "/prompts/suggest", H, body={"text": "irak4 in lupus"}, module=mod, screen="(Legacy) AI suggestion",
          desc="Older suggestion endpoint kept for compatibility. Use /prompts/rephrase.")
     call(c, "GET", "/prompts/suggested", H, module=mod, screen="Suggested prompts", desc="Published prompts from the Prompts Library.")
@@ -240,12 +266,14 @@ with TestClient(app) as c:
     mod = "Drug Pipeline Explorer"
     call(c, "GET", "/pipeline/options", H, module=mod, screen="Filter dropdowns + More filters dialog",
          desc="Grouped dropdown options (target, indication, modality, stage), option hints and the More filters definition.")
-    call(c, "POST", "/runs", H, body={"module": "pipeline", "question": "", "filters": {"indication": "SLE", "stage": "Phase 2"},
+    pipe_done = call(c, "POST", "/runs", H, body={"module": "pipeline", "question": "", "filters": {"indication": "SLE", "stage": "Phase 2"},
                                        "more_filters": {"status": "rec", "phase": ["p2"]}},
          module=mod, screen="Ask box > Submit", desc="Starts a pipeline run. A question or at least one filter is required.",
-         notes="filters: target, indication, modality, stage. more_filters: see /pipeline/options.more_filters.")
+         notes="filters: target, indication, modality, stage. more_filters: see /pipeline/options.more_filters.").json()["id"]
     call(c, "GET", f"/runs/{pipe_done}/result", H, template="/runs/{run_id}/result", module=mod, screen="Answer: KPI row, five views, AI summary",
-         desc="Pipeline answer: kpi_tiles, assets (table), swimlane, stage_counts (graph), heatmap, radar, summary, follow_ups.")
+         desc="Pipeline answer: kpi_tiles, assets (table), swimlane, stage_counts (graph), heatmap, radar from the database; "
+              "summary (Markdown with [n] citations), references and top_sources from the AI service.",
+         notes="summary is null for sample runs (they never call the AI service): hide the AI summary panel.")
     call(c, "GET", "/pipeline/assets", H, params={"indication": "SLE", "view": "table", "sort": "stage"}, module=mod,
          screen="Per-answer filter bar / view tabs / column sort",
          desc="Live re-query when a filter, view tab or sort changes (no new run). view: table | swimlane | graph | heatmap | radar.",
@@ -261,12 +289,15 @@ with TestClient(app) as c:
     call(c, "GET", "/cioa/workflows", H, params={"question": "Which endpoints have IRAK4 trials used?"}, module=mod,
          screen="Workflow picker (5 cards, View subcategories)",
          desc="The five workflows with subcategories and report sections. 'recommended' = key to highlight for the question.")
-    call(c, "POST", "/runs", H, body={"module": "cioa", "question": "Map IRAK4 competitors in SLE", "workflow": "competitive",
+    ci_done = call(c, "POST", "/runs", H, body={"module": "cioa", "question": "Map IRAK4 competitors in SLE", "workflow": "competitive",
                                        "therapeutic_area": "Rheumatology", "indication": "SLE", "molecular_target": "IRAK4 inhibitor"},
          module=mod, screen="Workflow card > Run workflow", desc="Starts a Competitive Insights report with the chosen workflow.",
-         notes="workflow: competitive | endpoint | epidemiology | landscape | unmet_need. Missing workflow = recommended one.")
+         notes="workflow: competitive | endpoint | epidemiology | landscape | unmet_need. Missing workflow = recommended one. "
+               "The AI service writes the overview and each report section (one search each, run in parallel): about 30-60 s.").json()["id"]
     call(c, "GET", f"/runs/{ci_done}/result", H, template="/runs/{run_id}/result", module=mod, screen="Report card",
-         desc="Report: workflow, context, stats (3 KPI tiles), key_takeaways, sections[] (bullets and optional table), data_sources.")
+         desc="Report: workflow, context, stats (3 KPI tiles, database), key_takeaways and overview (AI), sections[] with text, "
+              "bullets and references (AI) and an optional table (database), data_sources.",
+         notes="Sample reports in the demo data have no AI text (text null, bullets empty): show the tables only.")
     call(c, "POST", f"/runs/{ci_done}/change-workflow", H, template="/runs/{run_id}/change-workflow", body={"workflow": "unmet_need"},
          module=mod, screen="Change workflow", desc="Runs the same question with another workflow as a new turn; the previous report stays.",
          notes="409 if the report already uses that workflow; 422 for an unknown workflow.")
@@ -325,7 +356,8 @@ with TestClient(app) as c:
     aid = a["id"]
     call(c, "GET", f"/scoring/assessments/{aid}", H, template="/scoring/assessments/{aid}", module=mod,
          screen="Criteria, weights, AI scores, results table",
-         desc="Full assessment: criteria, weights (+ weight_total, weight_errors), ai_scores, overrides, results with rank and priority.")
+         desc="Full assessment: criteria, weights (+ weight_total, weight_errors), ai_scores, overrides, results with rank and priority.",
+         notes="ai_scores values are null (Missing) until the AI service can score: the user enters scores as overrides.")
     keys = [cr["key"] for cr in a["criteria"]]
     call(c, "PUT", f"/scoring/assessments/{aid}/weights", H, template="/scoring/assessments/{aid}/weights",
          body={"weights": dict(zip(keys, [20, 20, 20, 30, 10]))}, module=mod, screen="Weights > Apply & Recalculate",
@@ -377,7 +409,8 @@ with TestClient(app) as c:
     call(c, "POST", f"/datasources/{connector}/toggle", A, template="/datasources/{cid}/toggle", params={"enabled": "true"},
          module=mod, screen="Enabled switch", desc="Enables or disables a connector. Disabled sources are never queried.")
     call(c, "POST", f"/datasources/{connector}/test", A, template="/datasources/{cid}/test", module=mod, screen="Test button",
-         desc="Tests the connection and updates health.")
+         desc="Tests the connection and updates health.",
+         notes="connected=false: no client is connected for this source yet (search goes through the AI service).")
 
     mod = "Admin"
     call(c, "GET", "/admin/overview", A, module=mod, screen="Admin overview cards", desc="Count and 'N live' badge for each admin section.")
@@ -429,6 +462,9 @@ with TestClient(app) as c:
          desc="Ends this session: the token stops working (401). Other devices stay signed in.",
          notes="Show the unsaved-edits warning first, then clear the stored token.")
     call(c, "GET", "/health", None, module="Operations", screen="Monitoring", desc="Liveness check. No login needed.", prefix="")
+    call(c, "GET", "/health/dependencies", None, module="Operations", screen="Monitoring / Data Connectors",
+         desc="Status of external services, e.g. the AI Scientific Search service (configured, ok, latency). No login needed.",
+         notes="configured=false: AI runs fail with 'not configured' and AI Rephrase returns 503.", prefix="")
 
 # ------------------------------------------------------------------ coverage check
 documented = {(mm.upper(), p) for p, ops in app.openapi()["paths"].items() for mm in ops}
@@ -470,9 +506,11 @@ readme = [
     ("Run status -> UI", "In Progress = loader (if stalled=true: stop polling, show Resume) · Paused / Failed = Resume / Retry · "
                          "Completed = result · Cancelled = show the previous turn."),
     ("Dates", "ISO-8601 in UTC with an offset, e.g. 2026-11-24T09:15:00+00:00. Format in the browser."),
-    ("Sample content", "Answer and report text is placeholder content until real AI and data sources are connected. "
-                       "Build against field names and structure, not wording."),
-    ("Samples in this sheet", "Real responses from the demo data. Long lists show 2 items then '... N more'; long text is truncated."),
+    ("AI content", "AI answers, pipeline summaries and report text come from the AI Scientific Search service; nothing is "
+                   "made up when it is unavailable (the run fails with the reason). Sample runs in the demo data have no AI "
+                   "text. AI scores in Scoring start as Missing (null) until the user enters a score."),
+    ("Samples in this sheet", "Real responses from the demo data; AI answers are a recorded reply from the AI service. "
+                              "Long lists show 2 items then '... N more'; long text is truncated."),
     ("Sheets", "APIs = every endpoint (filter the Module column to see one screen) with sample request and response · Values = allowed values for status, module, workflow and other fields."),
 ]
 for i, (k, v) in enumerate(readme, 1):

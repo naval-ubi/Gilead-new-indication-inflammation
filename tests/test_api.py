@@ -1,17 +1,32 @@
-"""API smoke tests. Needs the full requirements installed: `pytest tests/test_api.py`."""
+"""API smoke tests. Needs the full requirements installed: `pytest tests/test_api.py`.
+
+Runs on SQLite by default. To run the same tests on PostgreSQL, point TEST_DATABASE_URL at an empty test database
+(its contents are dropped):  TEST_DATABASE_URL=postgresql+psycopg://user:pass@localhost:5432/gilead_test pytest
+"""
 import os
-os.environ.update(DATABASE_URL="sqlite:///./test.db", SEED_DEMO_DATA="true")
+TEST_DB = os.environ["DATABASE_URL"]  # set by tests/conftest.py
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import text
 
+from app.db.base import engine
 from app.main import app
+
+
+def reset_database():
+    if TEST_DB.startswith("sqlite"):
+        if os.path.exists("test.db"):
+            os.remove("test.db")
+    else:
+        with engine.begin() as conn:  # start from an empty schema (migrations run again on start-up)
+            conn.execute(text("DROP SCHEMA public CASCADE"))
+            conn.execute(text("CREATE SCHEMA public"))
 
 
 @pytest.fixture(scope="module")
 def client():
-    if os.path.exists("test.db"):
-        os.remove("test.db")
+    reset_database()
     with TestClient(app) as c:
         yield c
 
@@ -59,7 +74,12 @@ def test_scoring_flow(client):
     h = auth(client)
     model = client.get("/api/v1/scoring/models", headers=h).json()[0]["id"]
     a = client.post("/api/v1/scoring/assessments", headers=h, json={"model_id": model}).json()
-    assert [r["indication"] for r in sorted(a["results"], key=lambda r: r["rank"])][0] == "SLE"
+    # the AI service cannot score yet: every AI score is Missing until the user enters one with a justification
+    assert all(v is None for scores in a["ai_scores"].values() for v in scores.values())
+    for ind, score in (("SLE", 5), ("RA", 2), ("AD", 1)):
+        a = client.put(f"/api/v1/scoring/assessments/{a['id']}/overrides", headers=h, json={
+            "indication": ind, "criterion": "population", "score": score, "justification": "Claims data"}).json()
+    assert [r["indication"] for r in sorted(a["results"], key=lambda r: r["rank"] or 99)][0] == "SLE"
     bad = client.put(f"/api/v1/scoring/assessments/{a['id']}/weights", headers=h,
                      json={"weights": {c["key"]: 25 for c in a["criteria"]}})
     assert bad.status_code == 422
@@ -86,13 +106,12 @@ def test_ai_loader_steps_sources_and_result_shape(client):
     names = [s["name"] for s in created["steps"]]
     assert names == ["Interpret question", "Search literature", "Evaluate clinical evidence", "Cross-check findings",
                      "Compare indications", "Draft answer"]
-    # one sub-item per searched source, defaulting to the module's sources that are enabled
-    assert [i["label"] for i in created["steps"][1]["items"]] == ["PubMed", "ClinicalTrials.gov", "Open Targets Platform",
-                                                                  "Citeline Trialtrove"]
+    # the search stage is one call to the AI service; afterwards it lists the sources the service used
+    assert [i["label"] for i in created["steps"][1]["items"]] == ["AI Scientific Search (PubMed and indexed literature)"]
     done = client.get(f"/api/v1/runs/{created['id']}/result", headers=h).json()
     assert all(i["status"] == "done" for s in done["steps"] for i in s["items"])
     res = done["result"]
-    assert res["relevant"] and res["answer"] and len(res["follow_ups"]) == 3
+    assert res["relevant"] and res["answer"] and res["follow_ups"] == []
     assert {s["name"] for s in res["top_sources"]} == set(res["research_summary"]["sources_searched"])
     assert res["research_summary"]["stage_count"] == 6
 
@@ -101,7 +120,7 @@ def test_out_of_scope_question_is_not_researched(client):
     h = auth(client)
     created = run(client, h, module="ai", question="What will the weather be in Paris tomorrow?")
     d = client.get(f"/api/v1/runs/{created['id']}/result", headers=h).json()
-    assert d["result"]["relevant"] is False and d["result"]["follow_ups"]
+    assert d["result"]["relevant"] is False and d["result"]["follow_ups"] == []
     assert [s["status"] for s in d["steps"]][1:] == ["skipped"] * (len(d["steps"]) - 1)
 
 
@@ -112,8 +131,6 @@ def test_follow_up_thread_and_notify(client):
     assert second["thread_id"] == first["id"] and second["notify"] is True
     thread = client.get(f"/api/v1/runs/{second['id']}/thread", headers=h).json()
     assert [t["id"] for t in thread["turns"]] == [first["id"], second["id"]]
-    # follow-ups never repeat a question already asked in the thread
-    assert first["question"] not in thread["turns"][1]["result"]["follow_ups"]
     assert client.post(f"/api/v1/runs/{second['id']}/notify", headers=h, json={"enabled": False}).json()["notify"] is False
     bad = client.post("/api/v1/runs", headers=h, json={"module": "pipeline", "question": "x y", "parent_run_id": first["id"]})
     assert bad.status_code == 422
@@ -122,7 +139,7 @@ def test_follow_up_thread_and_notify(client):
 def test_rephrase(client):
     h = auth(client)
     r = client.post("/api/v1/prompts/rephrase", headers=h, json={"text": "irak4 biomarkers target engagement", "module": "ai"})
-    assert "biomarkers" in r.json()["rephrased"].lower() and r.json()["rephrased"] != r.json()["original"]
+    assert r.status_code == 200 and r.json()["rephrased"] != r.json()["original"]     # from the (simulated) AI service
     assert client.post("/api/v1/prompts/rephrase", headers=h, json={"text": "  "}).status_code == 422
 
 
@@ -159,7 +176,7 @@ def test_pipeline_new_filters(client):
     assert p2["kpi_tiles"][0]["label"] == "Indication"
     created = run(client, h, module="pipeline", question="", filters={"indication": "AD"})
     res = client.get(f"/api/v1/runs/{created['id']}/result", headers=h).json()["result"]
-    assert res["relevant"] and {a["indication"] for a in res["assets"]} == {"AD"} and res["follow_ups"]
+    assert res["relevant"] and {a["indication"] for a in res["assets"]} == {"AD"} and res["summary"]
 
 
 def test_home_summary_and_run_again(client):
@@ -296,9 +313,11 @@ def test_stalled_in_progress_run_can_be_resumed(client):
     assert d["stalled"] and d["resumable"]
     assert client.post(f"/api/v1/runs/{rid}/resume", headers=h).status_code == 202
     assert client.get(f"/api/v1/runs/{rid}", headers=h).json()["status"] == "Completed"
+    # the saved progress had no AI answer (stopped mid-run): resuming asked the service again
+    assert client.get(f"/api/v1/runs/{rid}/result", headers=h).json()["result"]["answer"]
 
 
-def test_sample_data_fills_home(client):
+def test_sample_data_fills_home(client, service):
     """Runs last in this module: it adds sample records to the shared test database."""
     from app.db.base import SessionLocal
     from app.seed_samples import seed_samples
@@ -306,11 +325,17 @@ def test_sample_data_fills_home(client):
     with SessionLocal() as db:
         assert seed_samples(db) is True
         assert seed_samples(db) is False                 # idempotent
+    assert service.calls == []                           # samples never call the billed AI service
     h = auth(client)
     cards = {c["key"]: c["count"] for c in client.get("/api/v1/home/summary", headers=h).json()["cards"]}
     assert cards["in_progress"] >= 6 and cards["saved"] >= 10 and cards["recent_results"] >= 14
     statuses = {r["status"] for r in client.get("/api/v1/home", headers=h, params={"tab": "in_progress"}).json()["items"]}
     assert statuses == {"In Progress", "Paused", "Failed"}
+    paused = next(r for r in client.get("/api/v1/home", headers=h, params={"tab": "in_progress"}).json()["items"]
+                  if r["status"] == "Paused" and r["module"] == "pipeline")
+    assert client.post(f"/api/v1/runs/{paused['id']}/resume", headers=h).status_code == 202
+    res = client.get(f"/api/v1/runs/{paused['id']}/result", headers=h).json()["result"]
+    assert res["provider"] == "ai_scientific_search" and res["summary"]     # resumed by a user: AI text filled in
 
 
 def test_admin_edits_with_dates_are_audited(client):

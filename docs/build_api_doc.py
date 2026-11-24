@@ -110,7 +110,8 @@ story = [
                       "<font name='Courier'>emerging_findings</font>, <font name='Courier'>elapsed_seconds</font>."),
         ("3 · Result", f"When <font name='Courier'>status = Completed</font>: {ep('GET', '/runs/{id}/result')}. "
                        "If <font name='Courier'>result.relevant</font> is false, show the “Please ask a relevant question” card with "
-                       "<font name='Courier'>message</font> and <font name='Courier'>follow_ups</font>."),
+                       "<font name='Courier'>message</font>. If <font name='Courier'>status = Failed</font>, show "
+                       "<font name='Courier'>step_label</font> (e.g. the AI service is not configured or timed out) and offer Retry."),
         ("4 · Follow-up", "Send the previous run id as <font name='Courier'>parent_run_id</font>. Rebuild the conversation from "
                           f"{ep('GET', '/runs/{id}/thread')} (turns oldest first)."),
         ("Stop / resume", f"{ep('POST', '/runs/{id}/cancel')} (stop button) · /pause · /resume (History) · /rerun (Regenerate)."),
@@ -159,17 +160,18 @@ story += section("4. Home", "Hero ask box, three KPI cards, and the card list fo
 
 story += section("5. AI Scientific Search", "Conversational research with a staged loader, references and follow-ups.", [
     ("Landing ask box + Submit", [("POST", "/runs")], "{module: ai, question, deep_research?, sources?, notify?}. Without sources the module defaults are used."),
-    ("AI Rephrase", [("POST", "/prompts/rephrase")], "module = ai."),
+    ("AI Rephrase", [("POST", "/prompts/rephrase")], "module = ai. 503 = AI service unavailable: show the message, keep the text."),
     ("Research loader (stages, Show details, Live activity, Emerging findings)", [("GET", "/runs/{id}"), ("GET", "/runs/{id}/events")],
      "Stages = steps[]; per-stage detail = steps[i].items[]; Live activity = activity[]; findings carry evidence.label "
      "(Clinical / Preclinical / Genetic / Mechanistic) and preliminary = true."),
     ("Notify me (bell in loader / input bar)", [("POST", "/runs/{id}/notify")], "Toggle; reflect run.notify."),
     ("Stop button", [("POST", "/runs/{id}/cancel")], "Then show the last completed turn."),
     ("Answer", [("GET", "/runs/{id}/result")],
-     "result.answer (markdown), references[], follow_ups[], research_summary (stages, sources_searched, elapsed_seconds) for the "
-     "“Research complete” strip."),
+     "result.answer (markdown; citations [n] match references[].number), references[] (title, url, source, doi, journal, "
+     "publication_date), research_summary for the “Research complete” strip. A search takes about 10-15 s. "
+     "follow_ups[] is always empty (the AI service does not suggest any): hide the chips."),
     ("View Details drawer", [("GET", "/runs/{id}/result")], "key_findings[] + top_sources[{name, url}]."),
-    ("Follow-up question chips / input bar", [("POST", "/runs")], "Same body + parent_run_id = last turn's id."),
+    ("Follow-up input bar", [("POST", "/runs")], "Same body + parent_run_id = last turn's id."),
     ("Conversation history (reload/deep link)", [("GET", "/runs/{id}/thread")], "Render each turn; completed turns include result."),
     ("Regenerate answer", [("POST", "/runs/{id}/rerun")], "New run in the same thread."),
     ("Save Prompt / Save conversation", [("POST", "/runs/{id}/save")], "{folder?, title?} &#8594; item_id. 409 if the run is not completed."),
@@ -185,7 +187,8 @@ story += section("6. Drug Pipeline Explorer", "Conversation of pipeline answers;
      "{module: pipeline, question?, filters{target, indication, modality, stage}, more_filters?}. A question OR a filter is required."),
     ("Loader", [("GET", "/runs/{id}")], "Same loader contract as AI Search."),
     ("Answer: KPI row + views + AI summary", [("GET", "/runs/{id}/result")],
-     "kpi_tiles[], assets (table), swimlane, stage_counts (graph), heatmap, radar, summary, follow_ups, more_filters_count."),
+     "kpi_tiles[], assets (table), swimlane, stage_counts (graph), heatmap, radar, more_filters_count (database); "
+     "summary with [n] citations + references (AI service; null for sample runs: hide the summary panel)."),
     ("Per-answer filter bar / view tabs / column sort", [("GET", "/pipeline/assets"), ("POST", "/pipeline/assets/query")],
      "Live re-query, no new run. Params: filters + view=table|swimlane|graph|heatmap|radar + sort/desc. "
      "Use the POST form when More filters are set."),
@@ -203,7 +206,9 @@ story += section("7. Competitive Insights", "Ask &#8594; choose one of five work
      "{module: cioa, question, workflow, therapeutic_area?, indication?, molecular_target?, notify?}. Missing workflow &#8594; recommended one."),
     ("Loader", [("GET", "/runs/{id}")], "Stage 3 items = the workflow's subcategories."),
     ("Report card", [("GET", "/runs/{id}/result")],
-     "workflow, context, stats[3] (value, label, icon), key_takeaways[], sections[{title, bullets[], table?}], data_sources[]."),
+     "workflow, context, stats[3] (value, label, icon; database), key_takeaways[] + overview (AI), "
+     "sections[{title, text, bullets[], references[], table?}] (text from the AI service, table from the database), data_sources[]. "
+     "Writing the report takes about 30-60 s."),
     ("Change workflow", [("POST", "/runs/{id}/change-workflow")], "{workflow} &#8594; new run in the same thread; previous report stays."),
     ("Export Full Report (PDF)", [("GET", "/runs/{id}/report")],
      "Render-ready JSON: meta table, at_a_glance, key_takeaways, contents, sections, appendices, footer, filename. FE renders the PDF."),
@@ -252,7 +257,7 @@ story += section("10. History", None, [
 story += section("11. Data Connectors &amp; Admin", "Admin endpoints require the <i>administer</i> permission.", [
     ("Data Connectors page (KPIs, category tabs, search)", [("GET", "/datasources")], "?category=&amp;q= &#8594; categories, kpis, items."),
     ("Add / Edit connector", [("POST", "/datasources"), ("PATCH", "/datasources/{cid}")], "{name, category, description, license}. New = disabled."),
-    ("Enable switch / Test", [("POST", "/datasources/{cid}/toggle"), ("POST", "/datasources/{cid}/test")], "toggle takes ?enabled=true|false."),
+    ("Enable switch / Test", [("POST", "/datasources/{cid}/toggle"), ("POST", "/datasources/{cid}/test")], "toggle takes ?enabled=true|false. Test returns connected = false while no client is connected for a source."),
     ("Admin overview cards", [("GET", "/admin/overview")], "sections[]: key, name, count, badge (“3 live”, “39 enabled”)."),
     ("Users", [("GET", "/admin/users"), ("POST", "/admin/users"), ("PATCH", "/admin/users/{uid}")],
      "{name, email, role (name from /admin/roles), groups [names], status, password?}. Unknown role = 422; new group names are created. "
@@ -269,10 +274,12 @@ story += section("11. Data Connectors &amp; Admin", "Admin endpoints require the
     ("Audit log", [("GET", "/admin/audit")], ""),
 ])
 
-story += [Spacer(1, 6), Paragraph("12. Stubbed today", H2), Paragraph(
-    "Response shapes are final, but answer text, report section text, AI Rephrase, the out-of-scope check, follow-up suggestions "
-    "and connector records are placeholders until real LLM and data-source clients are wired in. Build the UI against the shapes, "
-    "not the wording.", BODY)]
+story += [Spacer(1, 6), Paragraph("12. Where content comes from", H2), Paragraph(
+    "AI Search answers, Pipeline summaries, Competitive Insights report text and AI Rephrase come from the AI Scientific "
+    "Search service. Nothing is made up: without the service a run fails with the reason (offer Retry) and AI Rephrase "
+    "returns 503. Tables, charts and report statistics come from the database. Not available yet: follow-up suggestions "
+    "(follow_ups is empty), AI scores in Scoring (null = Missing; users enter scores) and data-source clients "
+    "(Test connection returns connected = false). Sample runs in the demo data never call the service, so they have no AI text.", BODY)]
 
 
 def deco(c, d):

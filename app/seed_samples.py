@@ -3,47 +3,72 @@
 Everything is created through the same functions the API endpoints use, so each record has exactly the shape the
 frontend receives in real use. Timestamps are spread over the last ~6 weeks so History date filters have data.
 
+No AI-written content: sample runs never call the AI Scientific Search service (it is billed), so their AI text
+fields (pipeline summaries, report takeaways and sections) are empty. Counts, tables and charts are real database
+content. There are no sample AI Search runs; create those by asking a question with the service configured.
+
 What you get (log in as swanik@example.com / ChangeMe123!):
-  Home / History  completed searches, pipeline answers and reports; runs in progress (one recent, two stalled and
-                  resumable), a failed and two paused runs (Resume / Retry); an out-of-scope question; runs older
-                  than 7 and 30 days; nine saved items across every module
-  Conversations   AI Search, Pipeline and Competitive Insights threads with follow-ups and a changed workflow
+  Home / History  completed pipeline answers and reports; runs in progress (one recent, two stalled and resumable),
+                  a failed and two paused runs (Resume / Retry); an out-of-scope question; runs older than 7 and
+                  30 days; saved items across modules
+  Conversations   Pipeline and Competitive Insights threads with a follow-up and a changed workflow
   Workspace       own items in folders, an archived item, a version history, notes, an item shared with a
                   colleague, items shared with you directly and through your group
-  Scoring         an assessment with two justified overrides and two saved scenarios; a draft whose weights do
-                  not total 100% (error state)
+  Scoring         an assessment with two justified scores and two saved scenarios; a draft whose weights do not
+                  total 100% (error state). AI scores show as Missing until the AI service can score.
   Pipeline        programs at every stage incl. Filed, Marketed, On hold and Discontinued, in five indications
   Admin           more colleagues (share dialog, user list), an extra group, audit history with before/after
   Notifications   read and unread
 
-The data is loaded in parts; each part is applied once, so databases that already have the earlier part only get
-the new records.
+Databases holding samples from earlier versions (placeholder AI text, made-up AI scores) are cleaned first.
 
 Run:  python -m app.seed_samples        (safe to repeat; to start over, delete gilead.db and start the API)
 Or set SEED_SAMPLE_DATA=true in .env to load it on start-up.
 """
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime, timedelta, timezone
 
 from fastapi import BackgroundTasks
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from app.db import models as m
 from app.routers import admin as AD
 from app.routers import runs as R
 from app.routers import scoring as SC
 from app.routers import workspace as W
-from app.services import catalog
-from app.services.catalog import STARTER_QUESTIONS
-from app.services.integrations import fan_out
+from app.services.catalog import CIOA_EXAMPLE_QUESTIONS as CI
 
 log = logging.getLogger(__name__)
-AI, PIPE, CI = STARTER_QUESTIONS["ai"], STARTER_QUESTIONS["pipeline"], STARTER_QUESTIONS["cioa"]
-MARKER = AI[0]       # part 1 is loaded when Swanik has asked this question
-MARKER_2 = AI[5]     # part 2 (runs in progress, more saved items, pipeline, admin) marker
+PIPE = [  # questions a user might ask in the Drug Pipeline Explorer
+    "Which IRAK4 inhibitors and degraders are in development for SLE, RA and AD?",
+    "Which companies are developing IRAK4-targeting therapies, and how do their assets compare?",
+    "Which IRAK4 programs have been discontinued or put on hold, and why?",
+    "Map IRAK4-targeting drug candidates across development stages for SLE, RA and AD.",
+    "What efficacy results have been reported for IRAK4 inhibitors in rheumatoid arthritis?",
+    "Which IRAK4 programs are recruiting patients with atopic dermatitis?",
+    "Which IRAK4 programs target hidradenitis suppurativa or psoriasis?",
+]
+MARKER = PIPE[0]     # part 1 is loaded when Swanik has asked this question
+MARKER_2 = PIPE[6]   # part 2 (runs in progress, more saved items, pipeline, admin)
 NOW = datetime.now(timezone.utc)
+
+# How samples from earlier versions are recognised (for clean-up only; never shown).
+OLD_PLACEHOLDER_MARKERS = ["Sample content for testing", "Sample text for:", "sample finding relevant to", "[stub-llm]"]
+OLD_AI_SAMPLE_QUESTIONS = {
+    "What role does IRAK4 play in the pathogenesis of SLE, RA, and AD, and which inflammatory pathways are shared or disease-specific?",
+    "What genetic, molecular, preclinical, and clinical evidence supports IRAK4 as a therapeutic target in SLE, RA, and AD?",
+    "How does IRAK4 inhibition affect TLR/IL-1R–MyD88 signaling, inflammatory cytokine production, and immune-cell activation in each disease?",
+    "Which of the three diseases has the strongest scientific evidence supporting IRAK4 inhibition, and what are the major evidence gaps?",
+    "Which biomarkers could predict patient response to IRAK4 inhibitors or demonstrate target engagement in SLE, RA, and AD?",
+    "What clinical trials have evaluated IRAK4 inhibitors or degraders in SLE, RA, and AD, and what efficacy and safety findings have been reported?",
+    "How does IRAK4 inhibition compare with JAK, TYK2, BTK, and cytokine-targeted therapies in biological rationale, efficacy evidence, and safety?",
+    "Which patient subgroups or disease phenotypes in SLE, RA, and AD are most likely to benefit from IRAK4 inhibition, based on available evidence?",
+    "What are the potential safety risks of long-term IRAK4 inhibition, particularly infection risk, immune suppression, and off-target effects?",
+    "What will the weather be in Paris tomorrow?",
+}
 
 
 def _user(db, email: str) -> m.User:
@@ -77,9 +102,8 @@ def _stamp(obj, hours_ago: float, duration_min: float = 2.0) -> None:
         obj.updated_at = obj.created_at + timedelta(minutes=duration_min)
 
 
-def _stop_part_way(db, run: m.Run, at_step: int, status: str, items_done: int = 1, error: str | None = None,
-                   work: dict | None = None) -> None:
-    """Leave a run Paused or Failed part-way through, exactly as the engine would (resumable from that step)."""
+def _stop_part_way(db, run: m.Run, at_step: int, status: str, items_done: int = 1, error: str | None = None) -> None:
+    """Leave a run In Progress, Paused or Failed part-way through, exactly as the engine would (resumable)."""
     steps = [{**s, "items": [dict(i) for i in s["items"]]} for s in run.steps]
     activity = []
     for i, s in enumerate(steps):
@@ -102,7 +126,7 @@ def _stop_part_way(db, run: m.Run, at_step: int, status: str, items_done: int = 
     run.status, run.step_index, run.error = status, at_step, error
     run.step_label = (f"Failed at step {at_step + 1} - {error}" if status == "Failed"
                       else f"Step {at_step + 1} of {len(steps)} - {steps[at_step]['name']}")
-    run.result = {"_work": {**(work or {}), "activity": activity[-30:]}}
+    run.result = {"_work": {"activity": activity[-30:]}}
     run.updated_at = run.created_at + timedelta(minutes=3)   # last progress shortly after it started
 
 
@@ -127,17 +151,74 @@ def _has_run(db, user: m.User, question: str) -> bool:
     return db.scalar(select(m.Run.id).where(m.Run.user_id == user.id, m.Run.question == question).limit(1)) is not None
 
 
+def _has_assessment(db, user: m.User, title: str) -> bool:
+    return db.scalar(select(m.Assessment.id).where(m.Assessment.owner_id == user.id, m.Assessment.title == title)
+                     .limit(1)) is not None
+
+
+def _find(db, user: m.User, question: str, **where) -> m.Run | None:
+    q = select(m.Run).where(m.Run.user_id == user.id, m.Run.question == question, m.Run.status == "Completed")
+    for k, v in where.items():
+        q = q.where(getattr(m.Run, k) == v)
+    return db.scalars(q.order_by(m.Run.id)).first()
+
+
+def _soften_notifications(db, after_id: int, unread: int = 3) -> None:
+    """Spread new notifications over time; each recipient's newest few stay unread."""
+    notes = db.scalars(select(m.Notification).where(m.Notification.id > after_id).order_by(m.Notification.id)).all()
+    per_user: dict[int, int] = {}
+    for n in reversed(notes):
+        k = per_user[n.user_id] = per_user.get(n.user_id, -1) + 1
+        n.created_at = _ago(0.3 + k * 8)
+        n.unread = k < unread
+
+
+# ------------------------------------------------------------------ clean-up of earlier sample versions
+def remove_placeholder_samples(db) -> int:
+    """Delete sample records from earlier versions that hold placeholder AI text: the old AI Search sample runs,
+    any run whose result contains placeholder text, and the workspace items saved from them. Clears made-up AI
+    scores on assessments (the AI service cannot score yet, so any stored AI score is a placeholder).
+    Returns the number of runs removed."""
+    demo_ids = [u.id for u in db.scalars(select(m.User).where(m.User.email.in_(
+        ["swanik@example.com", "maria.chen@example.com"])))]
+    doomed = []
+    for r in db.scalars(select(m.Run).where(m.Run.user_id.in_(demo_ids))):
+        if r.module == "ai" and r.question in OLD_AI_SAMPLE_QUESTIONS and (r.result or {}).get("provider") is None:
+            doomed.append(r.id)
+        elif any(k in json.dumps(r.result or {}, default=str) for k in OLD_PLACEHOLDER_MARKERS):
+            doomed.append(r.id)
+    for it in db.scalars(select(m.WorkspaceItem)):
+        if it.run_id in doomed or any(k in json.dumps(it.snapshot or {}, default=str) for k in OLD_PLACEHOLDER_MARKERS):
+            db.delete(it)                                       # versions, shares and notes go with it
+    db.flush()
+    if doomed:
+        db.execute(update(m.Run).where(m.Run.parent_run_id.in_(doomed)).values(parent_run_id=None))
+        for r in db.scalars(select(m.Run).where(m.Run.id.in_(doomed))):
+            db.delete(r)
+    for a in db.scalars(select(m.Assessment)):
+        if any(v is not None for scores in (a.ai_scores or {}).values() for v in (scores or {}).values()):
+            a.ai_scores = {ind: {k: None for k in (scores or {})} for ind, scores in a.ai_scores.items()}
+    db.commit()
+    return len(doomed)
+
+
 def seed_samples(db) -> bool:
     """Applies every part that is not loaded yet. Returns False when everything was already present."""
+    from app.services.scientific_search import offline
+
+    removed = remove_placeholder_samples(db)
+    if removed:
+        log.info("Removed %d sample runs with placeholder content", removed)
     swanik = _user(db, "swanik@example.com")
     loaded = False
-    if not _has_run(db, swanik, MARKER):
-        _part_1(db, swanik)
-        loaded = True
-    if not _has_run(db, swanik, MARKER_2):
-        _part_2(db, swanik)
-        loaded = True
-    return loaded
+    with offline():  # sample runs never call the billed AI service; their AI text fields stay empty
+        if not _has_run(db, swanik, MARKER):
+            _part_1(db, swanik)
+            loaded = True
+        if not _has_run(db, swanik, MARKER_2):
+            _part_2(db, swanik)
+            loaded = True
+    return loaded or bool(removed)
 
 
 def _part_1(db, swanik: m.User) -> None:
@@ -145,24 +226,19 @@ def _part_1(db, swanik: m.User) -> None:
     maria, sam = _user(db, "maria.chen@example.com"), _user(db, "sam.patel@example.com")
     first_notification = db.scalar(select(m.Notification.id).order_by(m.Notification.id.desc())) or 0
 
-    # ---------------- AI Scientific Search
-    a1 = _run(db, swanik, 2.0, module="ai", question=AI[0])
-    a1b = _run(db, swanik, 1.8, module="ai", question=AI[3], parent_run_id=a1.id)           # follow-up turn
-    a2 = _run(db, swanik, 26, module="ai", question=AI[6], deep_research=True)               # Deep Research
-    a3 = _run(db, swanik, 74, module="ai", question=AI[8])
-    _run(db, swanik, 98, module="ai", question="What will the weather be in Paris tomorrow?")  # out of scope
-    _run(db, swanik, 20 * 24, module="ai", question=AI[1])                                   # older than 7 days
-    _run(db, swanik, 40 * 24, module="ai", question=AI[4])                                   # older than 30 days
-    failed = _run(db, swanik, 0.5, execute=False, module="ai", question=AI[7])
-    _stop_part_way(db, failed, at_step=1, status="Failed", items_done=2, error="Citeline Trialtrove connector timed out")
-
     # ---------------- Drug Pipeline Explorer
     p1 = _run(db, swanik, 5, module="pipeline", question=PIPE[0], filters={"indication": "SLE"})
-    _run(db, swanik, 4.8, module="pipeline", question=PIPE[6], parent_run_id=p1.id)
+    _run(db, swanik, 4.8, module="pipeline", question=PIPE[1], parent_run_id=p1.id)          # follow-up turn
     _run(db, swanik, 6 * 24, module="pipeline", question="", filters={"indication": "AD", "stage": "Phase 2"})
-    _run(db, swanik, 8 * 24, module="pipeline", question=PIPE[2], more_filters={"status": "rec", "phase": ["p1", "p2"]})
-    paused_p = _run(db, swanik, 3, execute=False, module="pipeline", question=PIPE[7])
+    p3 = _run(db, swanik, 8 * 24, module="pipeline", question=PIPE[3], more_filters={"status": "rec", "phase": ["p1", "p2"]})
+    p_old = _run(db, swanik, 20 * 24, module="pipeline", question=PIPE[4], filters={"indication": "RA"})  # > 7 days
+    _run(db, swanik, 40 * 24, module="pipeline", question=PIPE[5], filters={"indication": "AD"})         # > 30 days
+    _run(db, swanik, 98, module="pipeline", question="What will the weather be in Paris tomorrow?")      # out of scope
+    paused_p = _run(db, swanik, 3, execute=False, module="pipeline", question=PIPE[2])
     _stop_part_way(db, paused_p, at_step=3, status="Paused")
+    failed = _run(db, swanik, 0.5, execute=False, module="pipeline", question=PIPE[1], filters={"modality": "Monoclonal antibody"})
+    _stop_part_way(db, failed, at_step=1, status="Failed", items_done=0,
+                   error="The scientific search service did not answer within 90 seconds")
 
     # ---------------- Competitive Insights
     c1 = _run(db, swanik, 25, module="cioa", question=CI[0], workflow="competitive", indication="SLE",
@@ -183,42 +259,44 @@ def _part_1(db, swanik: m.User) -> None:
     db.commit()
 
     # ---------------- Workspace: own items, folders, versions, notes, sharing, archive
-    i1 = _save(db, swanik, a1, 1.7, folder="Scientific Evidence", title="Role of IRAK4 in SLE, RA and AD")
-    i1.versions.insert(0, m.ItemVersion(label="v2", note="Added follow-up on evidence gaps", snapshot=i1.snapshot,
-                                        created_at=_ago(1.6)))
-    i2 = _save(db, swanik, a2, 25, folder="Competitive Intelligence", title="IRAK4 versus JAK, TYK2, BTK and cytokine therapies")
+    i1 = _save(db, swanik, p1, 4.5, folder="Pipeline Reviews", title="IRAK4 pipeline - SLE")
+    i1.versions.insert(0, m.ItemVersion(label="v2", note="Updated after the Phase 2 filter review", snapshot=i1.snapshot,
+                                        created_at=_ago(4.2)))
+    i2 = _save(db, swanik, c1, 24, folder="Competitive Intelligence", title="Competitive Opportunity Report - IRAK4")
     W.share(i2.id, W.ShareIn(user_id=sam.id, permission="view"), db, swanik)
-    _note(db, sam, i2, "Useful comparison. Can we add payer access for the JAK class?", 22)
+    _note(db, sam, i2, "Useful overview. Can we add payer access for the JAK class?", 22)
     _note(db, swanik, i2, "Good idea, I will add it in the next run.", 21)
-    i3 = _save(db, swanik, a3, 70, folder="Scientific Evidence")
+    i3 = _save(db, swanik, p_old, 20 * 24 - 1, folder="Pipeline Reviews", title="IRAK4 in RA - efficacy review")
     W.patch_item(i3.id, W.ItemPatch(archived=True), db, swanik)                              # Archived tab
-    _stamp(i3, 70, 1)
-    _save(db, swanik, p1, 4.5, folder="Pipeline Reviews", title="IRAK4 pipeline - SLE")
-    _save(db, swanik, c1, 24, folder="Competitive Intelligence", title="Competitive Opportunity Report - IRAK4")
+    _stamp(i3, 20 * 24 - 1, 1)
+    _save(db, swanik, p3, 8 * 24 - 1, folder="Pipeline Reviews", title="Recruiting Phase 1-2 programs")
 
-    # items other people share with Swanik: directly, and through the Clinical group (Swanik is a member)
-    m1 = _run(db, maria, 48, module="ai", question=AI[2])
-    mi1 = _save(db, maria, m1, 47, folder="Scientific Evidence")
+    # items other people share with Swanik: through the Clinical group (Swanik is a member), and directly
+    m1 = _run(db, maria, 48, module="pipeline", question=PIPE[4], filters={"indication": "RA"})
+    mi1 = _save(db, maria, m1, 47, folder="Pipeline Reviews", title="IRAK4 programs in RA")
     clinical = db.scalar(select(m.Group).where(m.Group.name == "Clinical"))
     W.share(mi1.id, W.ShareIn(group_id=clinical.id, permission="edit"), db, maria)
     _note(db, maria, mi1, "Shared with the Clinical team for review before Friday.", 46)
-    m2 = _run(db, maria, 30, module="pipeline", question=PIPE[3], filters={"indication": "RA"})
-    mi2 = _save(db, maria, m2, 29, folder="Pipeline Reviews")
+    m2 = _run(db, maria, 30, module="cioa", question=CI[2], workflow="landscape", indication="AD")
+    mi2 = _save(db, maria, m2, 29, folder="Competitive Intelligence", title="Therapeutic landscape - AD")
     W.share(mi2.id, W.ShareIn(user_id=swanik.id, permission="view"), db, maria)
 
-    # ---------------- Prioritization Scoring
+    # ---------------- Prioritization Scoring (AI scores start as Missing; these two are entered by the user)
+    if _has_assessment(db, swanik, "IRAK4 Indication Prioritisation"):   # kept from an earlier sample version
+        _soften_notifications(db, first_notification, unread=4)
+        db.commit()
+        return
     model = db.scalar(select(m.ScoringModel).where(m.ScoringModel.status == "Published"))
     aid = SC.create_assessment(SC.NewAssessment(model_id=model.id, title="IRAK4 Indication Prioritisation"), db, swanik)["id"]
     SC.set_override(aid, SC.OverrideIn(indication="RA", criterion="population", score=4,
-                                       justification="Claims data show a larger biologic-experienced population than the AI estimate."),
+                                       justification="Claims data show a large biologic-experienced population."),
                     db, swanik)
     SC.set_override(aid, SC.OverrideIn(indication="AD", criterion="headroom", score=1,
-                                       justification="Two oral JAK inhibitors and several biologics are now approved in AD."),
+                                       justification="Two oral JAK inhibitors and several biologics are approved in AD."),
                     db, swanik)
     SC.save_scenario(aid, SC.ScenarioIn(name="Baseline"), db, swanik)
     keys = [c["key"] for c in db.get(m.Assessment, aid).criteria]
-    payer = dict(zip(keys, [20, 20, 20, 30, 10]))
-    SC.apply_weights(aid, SC.WeightsIn(weights=payer), db, swanik)
+    SC.apply_weights(aid, SC.WeightsIn(weights=dict(zip(keys, [20, 20, 20, 30, 10]))), db, swanik)
     SC.save_scenario(aid, SC.ScenarioIn(name="Payer-weighted"), db, swanik)
     SC.apply_weights(aid, SC.WeightsIn(weights={k: 20 for k in keys}), db, swanik)
     si = db.get(m.WorkspaceItem, SC.to_workspace(aid, db, swanik)["item_id"])
@@ -229,31 +307,8 @@ def _part_1(db, swanik: m.User) -> None:
     for k, sc in enumerate(assessment.scenarios):
         sc.created_at = _ago(6.5 - k * 0.2)
 
-    # ---------------- Notifications: spread over time; older than a day are read
-    notes = db.scalars(select(m.Notification).where(m.Notification.id > first_notification)
-                       .order_by(m.Notification.id)).all()
-    per_user: dict[int, int] = {}
-    for n in reversed(notes):  # newest first, counted per recipient: each user's 4 newest stay unread
-        k = per_user[n.user_id] = per_user.get(n.user_id, -1) + 1
-        n.created_at = _ago(0.4 + k * 9)
-        n.unread = k < 4
+    _soften_notifications(db, first_notification, unread=4)
     db.commit()
-
-
-def _soften_notifications(db, after_id: int) -> None:
-    notes = db.scalars(select(m.Notification).where(m.Notification.id > after_id).order_by(m.Notification.id)).all()
-    per_user: dict[int, int] = {}
-    for n in reversed(notes):
-        k = per_user[n.user_id] = per_user.get(n.user_id, -1) + 1
-        n.created_at = _ago(0.2 + k * 7)
-        n.unread = k < 3
-
-
-def _find(db, user: m.User, question: str, **where) -> m.Run | None:
-    q = select(m.Run).where(m.Run.user_id == user.id, m.Run.question == question, m.Run.status == "Completed")
-    for k, v in where.items():
-        q = q.where(getattr(m.Run, k) == v)
-    return db.scalars(q.order_by(m.Run.id)).first()
 
 
 EXTRA_PROGRAMS = [  # name, sponsor, modality, target, indication, stage, activity, geography
@@ -282,7 +337,7 @@ def _part_2(db, swanik: m.User) -> None:
     maria = _user(db, "maria.chen@example.com")
     first_notification = db.scalar(select(m.Notification.id).order_by(m.Notification.id.desc())) or 0
 
-    # ---------------- pipeline programs: every stage and status, more indications (used by runs below)
+    # ---------------- pipeline programs: every stage and status, more indications
     for name, sponsor, modality, target, ind, stage, activity, geo in EXTRA_PROGRAMS:
         sp = _get_or_create(db, m.Sponsor, name=sponsor)
         asset = db.scalar(select(m.DrugAsset).filter_by(name=name, sponsor_id=sp.id)) or m.DrugAsset(
@@ -311,16 +366,11 @@ def _part_2(db, swanik: m.User) -> None:
         a.created_at = _ago(30 + k * 20)
 
     # ---------------- runs in progress: one recent, two stalled (no worker; Resume continues them)
-    ip_ai = _run(db, swanik, 0.08, execute=False, module="ai", question=MARKER_2, deep_research=True)
-    srcs = ip_ai.params.get("resolved_sources") or []
-    records, errors = fan_out(ip_ai.question, ip_ai.params.get("context", {}), srcs)
-    findings = [{"text": r["snippet"], "source": r["source"], "preliminary": True,
-                 "evidence": catalog.evidence_kind(f"{r['title']} {r['snippet']}")} for r in records][:3]
-    _stop_part_way(db, ip_ai, at_step=2, status="In Progress", items_done=1,
-                   work={"records": records, "errors": errors, "sources_searched": srcs, "findings": findings})
-    _stamp(ip_ai, 0.08, 4)                                   # updated 1 minute ago: looks live when loaded
-    ip_p = _run(db, swanik, 1.5, execute=False, module="pipeline", question=PIPE[1], filters={"indication": "AD"})
-    _stop_part_way(db, ip_p, at_step=1, status="In Progress", items_done=2)
+    ip_p = _run(db, swanik, 0.08, execute=False, module="pipeline", question=MARKER_2)
+    _stop_part_way(db, ip_p, at_step=2, status="In Progress", items_done=1)
+    _stamp(ip_p, 0.08, 4)                                     # updated 1 minute ago: looks live when loaded
+    ip_p2 = _run(db, swanik, 1.5, execute=False, module="pipeline", question=PIPE[5], filters={"indication": "AD"})
+    _stop_part_way(db, ip_p2, at_step=1, status="In Progress", items_done=0)
     ip_c = _run(db, swanik, 6, execute=False, module="cioa", question=CI[2], workflow="unmet_need",
                 therapeutic_area="Autoimmune and inflammatory disease", molecular_target="IRAK4 degrader")
     _stop_part_way(db, ip_c, at_step=2, status="In Progress", items_done=4)
@@ -330,9 +380,6 @@ def _part_2(db, swanik: m.User) -> None:
     c1b = _find(db, swanik, CI[0], workflow="landscape")
     if c1b:
         _save(db, swanik, c1b, 19, folder="Competitive Intelligence", title="Therapeutic landscape - IRAK4 in SLE")
-    pm = _find(db, swanik, PIPE[2])
-    if pm:
-        _save(db, swanik, pm, 8 * 24 - 1, folder="Pipeline Reviews", title="Recruiting Phase 1-2 programs")
     ce = _find(db, swanik, CI[1], workflow="endpoint")
     if ce:
         it = _save(db, swanik, ce, 9 * 24 - 1, folder="Clinical Endpoints", title="Endpoint benchmarks - IRAK4 programs")
@@ -345,13 +392,14 @@ def _part_2(db, swanik: m.User) -> None:
     W.share(lp.id, W.ShareIn(group_id=commercial.id, permission="view"), db, swanik)
 
     # ---------------- draft assessment whose weights do not total 100% (error state in Scoring)
-    model = db.scalar(select(m.ScoringModel).where(m.ScoringModel.status == "Published"))
-    aid = SC.create_assessment(SC.NewAssessment(model_id=model.id, title="IRAK4 - payer access view (draft)"), db, swanik)["id"]
-    SC.remove_criterion(aid, "pricing", db, swanik)          # weights now total 80% -> weight_errors
-    draft = db.get(m.WorkspaceItem, SC.to_workspace(aid, db, swanik)["item_id"])
-    draft.folder = "IRAK4 Indication Prioritisation"
-    _stamp(draft, 2.5, 1)
-    _stamp(db.get(m.Assessment, aid), 3, 30)
+    if not _has_assessment(db, swanik, "IRAK4 - payer access view (draft)"):
+        model = db.scalar(select(m.ScoringModel).where(m.ScoringModel.status == "Published"))
+        aid = SC.create_assessment(SC.NewAssessment(model_id=model.id, title="IRAK4 - payer access view (draft)"), db, swanik)["id"]
+        SC.remove_criterion(aid, "pricing", db, swanik)      # weights now total 80% -> weight_errors
+        draft = db.get(m.WorkspaceItem, SC.to_workspace(aid, db, swanik)["item_id"])
+        draft.folder = "IRAK4 Indication Prioritisation"
+        _stamp(draft, 2.5, 1)
+        _stamp(db.get(m.Assessment, aid), 3, 30)
 
     _soften_notifications(db, first_notification)
     db.commit()
@@ -359,11 +407,11 @@ def _part_2(db, swanik: m.User) -> None:
 
 def main() -> None:
     from app.db.base import SessionLocal, engine
-    from app.db.upgrade import upgrade_schema
+    from app.db.migrate import prepare_database
     from app.seed import seed, seed_reference
 
     logging.basicConfig(level=logging.WARNING)
-    upgrade_schema(engine)
+    prepare_database(engine)
     with SessionLocal() as db:
         seed(db)
         seed_reference(db)

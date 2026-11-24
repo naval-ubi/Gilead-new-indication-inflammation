@@ -40,8 +40,13 @@ def add_missing_columns(bind=None) -> list[str]:
                     continue
                 ddl = f"ALTER TABLE {table.name} ADD COLUMN {col.name} {col.type.compile(bind.dialect)}"
                 if default is not None:
-                    lit = int(default) if isinstance(default, bool) else default
-                    ddl += f" DEFAULT {lit!r}" if not isinstance(lit, str) else f" DEFAULT '{lit}'"
+                    if isinstance(default, bool):  # PostgreSQL needs TRUE/FALSE; SQLite stores 1/0
+                        lit = ("TRUE" if default else "FALSE") if bind.dialect.name == "postgresql" else str(int(default))
+                    elif isinstance(default, str):
+                        lit = "'" + default.replace("'", "''") + "'"
+                    else:
+                        lit = repr(default)
+                    ddl += f" DEFAULT {lit}"
                 conn.execute(text(ddl))
                 added.append(f"{table.name}.{col.name}")
             existing = {i["name"] for i in inspect(conn).get_indexes(table.name)}

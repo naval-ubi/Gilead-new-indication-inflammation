@@ -113,13 +113,6 @@ def more_filters_count(mf: dict | None) -> int:
     return n
 
 
-# ------------------------------------------------------------------ default sources per module (connector names)
-DEFAULT_SOURCES = {
-    "ai": ["PubMed", "ClinicalTrials.gov", "Open Targets Platform", "Citeline Trialtrove"],
-    "pipeline": ["Citeline Pharmaprojects", "ClinicalTrials.gov", "EMA Medicines"],
-    "cioa": ["Citeline Pharmaprojects", "ClinicalTrials.gov", "EMA Medicines", "IQVIA MIDAS", "USPTO Patent Public Search"],
-}
-
 # ------------------------------------------------------------------ Competitive Insights workflows
 WORKFLOWS = [
     {"key": "competitive", "name": "Competitive Intelligence & Opportunity Assessment", "short": "Competitive Opportunity",
@@ -229,38 +222,12 @@ def recommend_workflow(question: str) -> dict:
     return WORKFLOWS[0]
 
 
-# ------------------------------------------------------------------ starter questions (rephrase + follow-ups)
-STARTER_QUESTIONS = {
-    "ai": [
-        "What role does IRAK4 play in the pathogenesis of SLE, RA, and AD, and which inflammatory pathways are shared or disease-specific?",
-        "What genetic, molecular, preclinical, and clinical evidence supports IRAK4 as a therapeutic target in SLE, RA, and AD?",
-        "How does IRAK4 inhibition affect TLR/IL-1R–MyD88 signaling, inflammatory cytokine production, and immune-cell activation in each disease?",
-        "Which of the three diseases has the strongest scientific evidence supporting IRAK4 inhibition, and what are the major evidence gaps?",
-        "Which biomarkers could predict patient response to IRAK4 inhibitors or demonstrate target engagement in SLE, RA, and AD?",
-        "What clinical trials have evaluated IRAK4 inhibitors or degraders in SLE, RA, and AD, and what efficacy and safety findings have been reported?",
-        "How does IRAK4 inhibition compare with JAK, TYK2, BTK, and cytokine-targeted therapies in biological rationale, efficacy evidence, and safety?",
-        "Which patient subgroups or disease phenotypes in SLE, RA, and AD are most likely to benefit from IRAK4 inhibition, based on available evidence?",
-        "What are the potential safety risks of long-term IRAK4 inhibition, particularly infection risk, immune suppression, and off-target effects?",
-        "Based on published scientific and clinical evidence, which of SLE, RA, and AD offers the strongest rationale for further IRAK4 inhibitor development, and why?",
-    ],
-    "pipeline": [
-        "Which IRAK4 inhibitors and degraders are currently in development for SLE, RA, and AD? Include drug name, sponsor, mechanism of action, and development phase.",
-        "What registered clinical trials have evaluated IRAK4-targeting therapies in SLE, RA, and AD? Include NCT number, trial phase, enrollment, study status, and sponsor.",
-        "Map IRAK4-targeting drug candidates across Research, Preclinical, Phase 1, Phase 2, Phase 3, Phase 4, and Marketed stages for the three diseases.",
-        "What efficacy results have been reported for IRAK4 inhibitors in SLE, RA, and AD, and how do the outcomes compare across trials?",
-        "Which primary and secondary endpoints have been used in IRAK4 clinical trials, and how appropriate are they for measuring treatment response in each indication?",
-        "What adverse events, serious adverse events, discontinuations, and safety concerns have been reported in clinical trials of IRAK4-targeting therapies?",
-        "Which companies are developing IRAK4-targeting therapies, and how do their assets compare by clinical stage, modality, trial progress, and differentiation?",
-        "Which IRAK4 clinical development programs have been discontinued, terminated, or failed to meet their primary endpoints in SLE, RA, or AD, and what reasons have been reported?",
-        "Which patient populations, treatment lines, or disease subtypes remain underrepresented in IRAK4 clinical trials across SLE, RA, and AD?",
-        "Based on clinical trial activity, efficacy, safety, development maturity, and competitive intensity, which of SLE, RA, or AD should be prioritised?",
-    ],
-    "cioa": [
+# ------------------------------------------------------------------ example questions on the Competitive Insights ask box
+CIOA_EXAMPLE_QUESTIONS = [
         "Identify all emerging IRAK4 inhibitors being developed for systemic lupus erythematosus (SLE), rheumatoid arthritis (RA), and atopic dermatitis (AD). Include company, asset name, mechanism of action, modality, development phase, target indication, and latest reported status. Distinguish direct IRAK4 inhibitors from other therapies targeting related pathways.",
         "Compare the clinical development pipelines of IRAK4 inhibitors across SLE, RA, and AD. Identify active and recently discontinued programs, clinical trial phases, key endpoints, reported efficacy and safety findings, and anticipated milestones. Highlight programs most likely to become significant competitors over the next 3–5 years.",
         "Analyze emerging therapeutic mechanisms competing with IRAK4 inhibition in SLE, RA, and AD, including relevant JAK, TYK2, BTK, and cytokine-targeting therapies. Compare biological rationale, clinical differentiation, safety considerations, and potential advantages or limitations of IRAK4 inhibition for each indication.",
-    ],
-}
+]
 
 # What each module is allowed to answer. Questions outside this scope get the "Please ask a relevant question" reply.
 SCOPE = {
