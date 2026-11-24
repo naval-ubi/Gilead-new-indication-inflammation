@@ -2,6 +2,7 @@ from typing import Annotated
 
 import jwt
 from fastapi import Depends, HTTPException, status
+from fastapi.encoders import jsonable_encoder
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 
@@ -53,6 +54,8 @@ def require(perm: str):
 
 
 def audit(db, user: m.User | None, action: str, entity: str = "", entity_id="", before=None, after=None) -> None:
+    # snapshots may contain dates and other non-JSON values: store them in their JSON (API) form
+    before, after = jsonable_encoder(before), jsonable_encoder(after)
     db.add(m.AuditLog(user_id=user.id if user else None, action=action, entity=entity,
                       entity_id=str(entity_id), before=before, after=after))
     db.commit()

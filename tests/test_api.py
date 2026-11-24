@@ -311,3 +311,23 @@ def test_sample_data_fills_home(client):
     assert cards["in_progress"] >= 6 and cards["saved"] >= 10 and cards["recent_results"] >= 14
     statuses = {r["status"] for r in client.get("/api/v1/home", headers=h, params={"tab": "in_progress"}).json()["items"]}
     assert statuses == {"In Progress", "Paused", "Failed"}
+
+
+def test_admin_edits_with_dates_are_audited(client):
+    """Audit snapshots contain dates (last_login, last_sync, updated_at); edits must not fail when storing them."""
+    a = auth(client, "maria.chen@example.com")
+    sam = next(u for u in client.get("/api/v1/admin/users", headers=a).json() if u["email"] == "sam.patel@example.com")
+    assert sam["last_login"]                                   # Sam has logged in during this test module
+    r = client.patch(f"/api/v1/admin/users/{sam['id']}", headers=a, json={
+        "name": sam["name"], "email": sam["email"], "role": sam["role"], "groups": sam["groups"], "status": "Active"})
+    assert r.status_code == 200
+    pub = next(c for c in client.get("/api/v1/datasources", headers=a).json()["items"] if c["name"] == "PubMed")
+    client.post(f"/api/v1/datasources/{pub['id']}/test", headers=a)   # sets last_sync
+    r = client.patch(f"/api/v1/datasources/{pub['id']}", headers=a, json={
+        "name": "PubMed", "category": pub["category"], "description": pub["description"], "license": pub["access"]})
+    assert r.status_code == 200
+    rec = client.get("/api/v1/admin/records/prompt", headers=a).json()[0]
+    r = client.patch(f"/api/v1/admin/records/prompt/{rec['id']}", headers=a, json={
+        "name": rec["name"], "status": rec["status"], "version": rec["version"], "data": rec["data"]})
+    assert r.status_code == 200
+    assert client.get("/api/v1/admin/audit", headers=a).json()[0]["after"]["updated_at"]

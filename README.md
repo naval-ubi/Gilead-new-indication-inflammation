@@ -138,6 +138,7 @@ Reference PDFs in `docs/` (regenerate after API or model changes; needs `pip ins
 
 | Document | Generator |
 |---|---|
+| `docs/API_Handover.xlsx` – every endpoint with screen, permission, description and a real sample request and response | `PYTHONPATH=. python docs/build_api_excel.py` (needs openpyxl) |
 | `docs/API_Screen_Integration_Guide.pdf` – endpoint ↔ screen map for FE | `python docs/build_api_doc.py docs/API_Screen_Integration_Guide.pdf` |
 | `docs/Database_ER_Guide.pdf` – ER diagrams, normalisation decisions, data dictionary, DB commands, PostgreSQL DDL | `PYTHONPATH=. python docs/build_er_doc.py docs/Database_ER_Guide.pdf` |
 | `ER_DIAGRAM.md` – ER diagrams per domain (Mermaid) | `PYTHONPATH=. python docs/build_er_markdown.py` |
