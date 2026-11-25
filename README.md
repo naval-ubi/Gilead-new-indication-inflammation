@@ -114,7 +114,7 @@ GET  /home/summary          (KPI cards + preview)        POST /workspace/items/{
 POST /prompts/rephrase      {text, module}  ("AI Rephrase")     POST /prompts/suggest (legacy)   GET /prompts/suggested
 POST /runs                  {module: ai|pipeline|cioa, question, deep_research, sources, filters, more_filters,
                              workflow, therapeutic_area, indication, molecular_target, parent_run_id, notify}
-GET  /runs/{id}  /result  /thread  /events(SSE)  /report (Competitive Insights full report)
+GET  /runs/{id}  /result  /thread  /events(SSE)  /report (Export: render-ready report, all modules; ?thread=true = whole conversation)
 POST /runs/{id}/cancel|pause|resume|rerun|save|approve|notify|change-workflow
 GET  /pipeline/options      GET /pipeline/assets?target=&indication=&modality=&stage=&status=&phase=&view=
 POST /pipeline/assets/query {filters, more_filters, view, sort, desc}
@@ -369,7 +369,7 @@ Then open `<API URL>/health/dependencies` (AI service status) and `<API URL>/doc
 | **AI scores** | **Missing** until the AI service can score (`scoring.ai_recommend_scores`) |
 | Follow-up suggestions | **Real**: the service's `follow_up_questions` (AI Search and Pipeline answers) |
 | **Connector clients (PubMed, Citeline, IQVIA …) and secret storage** | **Not connected**: Test reports "No client is connected"; register a `BaseConnector` per source, keep credentials in a vault and only `secret_ref` in the DB |
-| Exports (PDF/PPT/Excel) | `/runs/{id}/report` returns render-ready report JSON; PDF rendering is client-side as in the prototype |
+| Exports (PDF) | `/runs/{id}/report` returns render-ready report JSON for AI Search, Pipeline and Competitive Insights (same shape); PDF rendering is client-side as in the prototype |
 
 ## 6. Suggested build order
 

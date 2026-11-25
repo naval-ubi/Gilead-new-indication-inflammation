@@ -182,3 +182,86 @@ def test_reply_without_follow_ups_still_works(client, service):
     rid = client.post("/api/v1/runs", headers=h, json={"module": "ai", "question": "IRAK4 and TLR signalling"}).json()["id"]
     res = client.get(f"/api/v1/runs/{rid}/result", headers=h).json()["result"]
     assert res["answer"] and res["follow_ups"] == [] and res["follow_ups_title"] is None
+
+
+# ------------------------------------------------------------------ Export Full Report (PDF) for every module
+REPORT_KEYS = {"module", "report_id", "title", "question", "generated_at", "meta", "notice", "at_a_glance", "key_takeaways",
+               "contents", "sections", "appendices", "footer", "filename", "turns"}
+SECTION_KEYS = {"index", "title", "text", "bullets", "references", "table", "turn"}
+
+
+def _completed(client, h, body):
+    rid = client.post("/api/v1/runs", headers=h, json=body).json()["id"]
+    assert client.get(f"/api/v1/runs/{rid}", headers=h).json()["status"] == "Completed"
+    return rid
+
+
+def test_ai_report(client, service):
+    h = auth(client)
+    rid = _completed(client, h, {"module": "ai", "question": "What role does IRAK4 play in SLE?"})
+    rep = client.get(f"/api/v1/runs/{rid}/report", headers=h).json()
+    assert set(rep) == REPORT_KEYS and rep["module"] == "ai" and rep["report_id"] == f"AI-{rid:06d}"
+    assert all(set(s) == SECTION_KEYS for s in rep["sections"])
+    answer = rep["sections"][0]
+    assert answer["title"] == "Answer" and "[1]" in answer["text"] and answer["references"][0]["number"] == 1
+    assert rep["sections"][1]["title"] == "Suggested follow-up questions" and rep["sections"][1]["bullets"]
+    assert rep["key_takeaways"] and rep["notice"] is None and rep["filename"].startswith("Scientific-Search_")
+    assert rep["at_a_glance"][0] == {"value": len(answer["references"]), "label": "References cited", "icon": "book"}
+
+
+def test_pipeline_report(client, service):
+    h = auth(client)
+    rid = _completed(client, h, {"module": "pipeline", "question": "", "filters": {"indication": "SLE"}})
+    rep = client.get(f"/api/v1/runs/{rid}/report", headers=h).json()
+    assert set(rep) == REPORT_KEYS and rep["module"] == "pipeline"
+    summary, by_stage, programs = rep["sections"]
+    assert summary["text"] and summary["references"]
+    assert by_stage["table"]["headers"] == ["Stage", "SLE", "Total"]
+    assert programs["table"]["rows"] and all(r[4] == "SLE" for r in programs["table"]["rows"])
+    assert ["Indication", "SLE"] in rep["meta"] and rep["filename"].startswith("Drug-Pipeline_SLE_")
+    assert [t["label"] for t in rep["at_a_glance"]][0] == "Indication"
+
+
+def test_report_not_available_without_an_answer(client, service):
+    h = auth(client)
+    rid = _completed(client, h, {"module": "ai", "question": "What is the weather in Paris?"})
+    r = client.get(f"/api/v1/runs/{rid}/report", headers=h)
+    assert r.status_code == 409 and "outside the module's scope" in r.json()["detail"]
+    service.replies = [(500, {"status": "error", "message": "down"})]
+    rid = client.post("/api/v1/runs", headers=h, json={"module": "ai", "question": "IRAK4 in AD"}).json()["id"]
+    assert client.get(f"/api/v1/runs/{rid}/report", headers=h).status_code == 409    # Failed run
+
+
+def test_conversation_report(client, service):
+    h = auth(client)
+    first = _completed(client, h, {"module": "ai", "question": "What role does IRAK4 play in SLE?"})
+    service.replies = [(500, {"status": "error", "message": "down"})]           # a failed turn is left out
+    client.post("/api/v1/runs", headers=h, json={"module": "ai", "question": "IRAK4 and B cells", "parent_run_id": first})
+    second = _completed(client, h, {"module": "ai", "question": "Which IRAK4 inhibitors are in trials for SLE?",
+                                    "parent_run_id": first})
+    single = client.get(f"/api/v1/runs/{second}/report", headers=h).json()
+    assert single["turns"] is None and single["sections"][0]["turn"] is None
+    rep = client.get(f"/api/v1/runs/{first}/report", headers=h, params={"thread": "true"}).json()   # any turn's id
+    assert set(rep) == REPORT_KEYS and all(set(s) == SECTION_KEYS for s in rep["sections"])
+    assert [t["run_id"] for t in rep["turns"]] == [first, second] and rep["report_id"] == f"AI-T{first:06d}"
+    titles = rep["contents"]
+    assert titles[0] == "1. What role does IRAK4 play in SLE?" and titles[1] == "2. Which IRAK4 inhibitors are in trials for SLE?"
+    assert titles[-1] == "Suggested follow-up questions" and titles.count("Suggested follow-up questions") == 1
+    assert rep["sections"][1]["turn"] == {"number": 2, "run_id": second, "question": "Which IRAK4 inhibitors are in trials for SLE?"}
+    assert ["Conversation turns", "2"] in rep["meta"] and rep["filename"].endswith("_conversation.pdf")
+    assert "1 turn(s)" in rep["appendices"][-1]["items"][0]
+
+
+def test_conversation_report_for_competitive_insights(client, service):
+    h = auth(client)
+    first = _completed(client, h, {"module": "cioa", "question": "Map IRAK4 competitors in SLE", "workflow": "competitive"})
+    second = client.post(f"/api/v1/runs/{first}/change-workflow", headers=h, json={"workflow": "endpoint"}).json()["id"]
+    rep = client.get(f"/api/v1/runs/{second}/report", headers=h, params={"thread": "true"}).json()
+    assert len(rep["turns"]) == 2 and rep["contents"][0].startswith("1. ") and rep["contents"][-1].startswith("2. ")
+
+
+def test_conversation_report_without_answers(client, service):
+    h = auth(client)
+    rid = _completed(client, h, {"module": "ai", "question": "What is the weather in Paris?"})
+    r = client.get(f"/api/v1/runs/{rid}/report", headers=h, params={"thread": "true"})
+    assert r.status_code == 409 and "no completed answer" in r.json()["detail"]

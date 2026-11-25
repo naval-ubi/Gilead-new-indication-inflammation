@@ -235,6 +235,16 @@ with TestClient(app) as c:
          notes="409 while the run is not Completed. relevant=false: show 'Please ask a relevant question' with message. "
                "follow_ups = suggested next questions from the AI service (show as chips; hide when empty). "
                "A search takes about 10-15 s. If the AI service is not configured or fails, the run is Failed with the reason in step_label.")
+    call(c, "GET", f"/runs/{ai_done}/report", H, template="/runs/{run_id}/report", module=mod, screen="Export (PDF)",
+         desc="Answer as a report ready to render as PDF. Same shape for every module: meta, at_a_glance, key_takeaways, "
+              "contents, sections[{title, text, bullets, references, table}], appendices, footer, filename.",
+         notes="409 while the run is not Completed, or for an out-of-scope question (no answer).")
+    call(c, "GET", f"/runs/{ai_done}/report", H, params={"thread": "true"}, template="/runs/{run_id}/report", module=mod,
+         screen="Export conversation (PDF)",
+         desc="The whole conversation as one report: every answered turn, oldest first. turns[] lists them; each section has "
+              "turn {number, run_id, question}. Any run id of the conversation works.",
+         notes="Works for every module (e.g. Competitive Insights reports with changed workflows). Turns without an answer "
+               "are left out and mentioned in the last appendix. 409 only when no turn has an answer yet.")
     call(c, "GET", f"/runs/{ai_done}/thread", H, template="/runs/{run_id}/thread", module=mod,
          screen="Conversation view (reload / deep link)", desc="Every turn of the conversation, oldest first; completed turns include result.")
     call(c, "GET", f"/runs/{ai_done}/events", H, template="/runs/{run_id}/events", module=mod, screen="Research loader (live stream)",
@@ -274,6 +284,9 @@ with TestClient(app) as c:
          desc="Pipeline answer: kpi_tiles, assets (table), swimlane, stage_counts (graph), heatmap, radar from the database; "
               "summary (Markdown with [n] citations), references and top_sources from the AI service.",
          notes="summary is null for sample runs (they never call the AI service): hide the AI summary panel.")
+    call(c, "GET", f"/runs/{pipe_done}/report", H, template="/runs/{run_id}/report", module=mod, screen="Export (PDF)",
+         desc="Pipeline answer as a report: AI summary, programs by stage (table), program list (table); at_a_glance = KPI row.",
+         notes="Same report shape as AI Search and Competitive Insights: one PDF renderer for all modules.")
     call(c, "GET", "/pipeline/assets", H, params={"indication": "SLE", "view": "table", "sort": "stage"}, module=mod,
          screen="Per-answer filter bar / view tabs / column sort",
          desc="Live re-query when a filter, view tab or sort changes (no new run). view: table | swimlane | graph | heatmap | radar.",
@@ -302,7 +315,8 @@ with TestClient(app) as c:
          module=mod, screen="Change workflow", desc="Runs the same question with another workflow as a new turn; the previous report stays.",
          notes="409 if the report already uses that workflow; 422 for an unknown workflow.")
     call(c, "GET", f"/runs/{ci_done}/report", H, template="/runs/{run_id}/report", module=mod, screen="Export Full Report (PDF)",
-         desc="Full report ready to render as PDF: meta table, at_a_glance, key_takeaways, contents, sections, appendices, filename.")
+         desc="Full report ready to render as PDF: meta table, at_a_glance, key_takeaways, contents, sections, appendices, filename.",
+         notes="Same shape as the AI Search and Pipeline reports.")
     call(c, "POST", f"/runs/{ci_done}/approve", H, template="/runs/{run_id}/approve", module=mod, screen="Approve report",
          desc="Marks a completed report as approved (edit permission).")
     call(c, "GET", "/cioa/capabilities", H, module=mod, screen="(Deprecated)", desc="Older capability list. Use /cioa/workflows.")

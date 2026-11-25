@@ -22,7 +22,7 @@ from app.core.config import settings
 from app.core.deps import DB, CurrentUser, audit, require
 from app.db import models as m
 from app.db.base import SessionLocal
-from app.services import catalog, scientific_search
+from app.services import catalog, reports, scientific_search
 from app.services import pipeline as pl
 from app.services.integrations import words
 from app.services.tasks import submit_run
@@ -317,43 +317,19 @@ def approve(run_id: int, db: DB, user: m.User = Depends(require("edit"))):
 
 
 @router.get("/runs/{run_id}/report")
-def full_report(run_id: int, db: DB, user: CurrentUser):
-    """'Export Full Report (PDF)': the complete, render-ready report document (cover metadata, at-a-glance
-    figures, key takeaways, contents, every section, appendices). The PDF is rendered from this payload."""
+def full_report(run_id: int, db: DB, user: CurrentUser,
+                thread: bool = Query(False, description="true = the whole conversation this run belongs to")):
+    """'Export Full Report (PDF)' for AI Scientific Search, Drug Pipeline and Competitive Insights: the complete,
+    render-ready report document (metadata, at-a-glance figures, key takeaways, contents, sections with text,
+    references and tables, appendices, filename). Same shape for every module; the PDF is rendered from it.
+    409 while the run is not completed, or when it has no answer (out-of-scope question).
+    thread=true: one report for the whole conversation (every answered turn, oldest first); any run id of the
+    conversation can be used. 409 only when no turn has an answer yet."""
     r = own_run(db, run_id, user)
-    if r.module != "cioa" or r.status != "Completed":
-        raise HTTPException(409, "Only completed Competitive Insights reports can be exported")
-    res = r.result or {}
-    wf = catalog.resolve_workflow(r.workflow)
-    rs = res.get("research_summary", {})
-    ctx = res.get("context", {})
-    mf = catalog.more_filters_count((r.params or {}).get("more_filters"))
-    generated = r.updated_at
-    return {
-        "report_id": f"CI-{r.id:06d}",
-        "title": f"{wf['name']} report",
-        "question": r.question,
-        "generated_at": generated,
-        "meta": [["Molecular target", ctx.get("molecular_target", "")], ["Indications", ", ".join(ctx.get("indications") or [])],
-                 ["Therapeutic area", ctx.get("therapeutic_area", "")], ["Workflow", wf["name"]],
-                 ["More filters", f"{mf} applied" if mf else "None"],
-                 ["Sources searched", ", ".join(rs.get("sources_searched") or res.get("sources_used") or [])],
-                 ["Generated", "AI Assistant"], ["Report ID", f"CI-{r.id:06d}"]],
-        "notice": None if res.get("provider") else "This report has no AI-written text (sample data).",
-        "at_a_glance": res.get("stats", []),
-        "key_takeaways": res.get("key_takeaways", []),
-        "contents": [s["title"] for s in res.get("sections", [])],
-        "sections": res.get("sections", []),
-        "appendices": [
-            {"title": "Appendix A · Workflow subcategories", "items": wf["subcategories"]},
-            {"title": "Appendix B · Method and limitations",
-             "items": [f"Sources: {', '.join(rs.get('sources_searched') or [])}.",
-                       "Content is assembled by the AI Assistant from enabled data connectors and the selected workflow template.",
-                       "Program statuses change frequently; re-run the workflow before decisions."]},
-        ],
-        "footer": "Gilead Confidential · For internal use only",
-        "filename": f"Competitive-Insights_{wf['short'].replace(' ', '-')}_{generated:%Y-%m-%d}.pdf",
-    }
+    try:
+        return reports.build_thread_report(db, r) if thread else reports.build_report(r)
+    except reports.NotExportable as e:
+        raise HTTPException(409, str(e)) from None
 
 
 # ----------------------------------------------------------------- prompt assist + Competitive Insights/pipeline metadata

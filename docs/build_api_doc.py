@@ -171,6 +171,9 @@ story += section("5. AI Scientific Search", "Conversational research with a stag
      "publication_date), research_summary for the “Research complete” strip. A search takes about 10-15 s. "
      "follow_ups[] = suggested next questions from the AI service (chips; hide when empty), titled follow_ups_title."),
     ("View Details drawer", [("GET", "/runs/{id}/result")], "key_findings[] + top_sources[{name, url}]."),
+    ("Export (PDF)", [("GET", "/runs/{id}/report")], "Sections: Answer (text + references), Suggested follow-up questions. "
+     "Same report shape as Competitive Insights. Add ?thread=true to export the whole conversation (every answered turn; "
+     "turns[] and section.turn say which question each part answers)."),
     ("Follow-up chips / input bar", [("POST", "/runs")], "Same body + parent_run_id = last turn's id (a chip sends its text as question)."),
     ("Conversation history (reload/deep link)", [("GET", "/runs/{id}/thread")], "Render each turn; completed turns include result."),
     ("Regenerate answer", [("POST", "/runs/{id}/rerun")], "New run in the same thread."),
@@ -195,6 +198,8 @@ story += section("6. Drug Pipeline Explorer", "Conversation of pipeline answers;
     ("More filters dialog (Apply)", [("POST", "/pipeline/assets/query")], "Badge count = more_filters_count."),
     ("Follow-up / Edit Prompt / Regenerate", [("POST", "/runs"), ("POST", "/runs/{id}/rerun")], "parent_run_id for follow-ups."),
     ("Save Search / Share", [("POST", "/runs/{id}/save"), ("POST", "/workspace/items/{id}/share")], ""),
+    ("Export (PDF)", [("GET", "/runs/{id}/report")], "Sections: AI summary, Programs by development stage (table), "
+     "Pipeline programs (table). at_a_glance = the KPI row. Same report shape as Competitive Insights."),
 ], extra="Stage filter accepts Discovery…Marketed plus Approved (= Marketed), Regulatory review (= Filed), On hold, Discontinued.")
 
 story += section("7. Competitive Insights", "Ask &#8594; choose one of five workflows &#8594; report. API module key remains <font name='Courier'>cioa</font>.", [
@@ -211,7 +216,7 @@ story += section("7. Competitive Insights", "Ask &#8594; choose one of five work
      "Writing the report takes about 30-60 s."),
     ("Change workflow", [("POST", "/runs/{id}/change-workflow")], "{workflow} &#8594; new run in the same thread; previous report stays."),
     ("Export Full Report (PDF)", [("GET", "/runs/{id}/report")],
-     "Render-ready JSON: meta table, at_a_glance, key_takeaways, contents, sections, appendices, footer, filename. FE renders the PDF."),
+     "Render-ready JSON, same shape for all modules: meta table, at_a_glance, key_takeaways, contents, sections[{title, text, bullets, references, table}], appendices, footer, filename. FE renders the PDF. 409 if not completed or out of scope."),
     ("Save Search / Share / Approve", [("POST", "/runs/{id}/save"), ("POST", "/runs/{id}/approve")], "Approve requires the edit permission."),
 ])
 
