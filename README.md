@@ -278,6 +278,83 @@ alembic check                                               # fails if models ch
 **Tests on PostgreSQL**: `TEST_DATABASE_URL=postgresql+psycopg://user:pass@localhost:5432/gilead_test pytest`
 (uses an empty test database and drops its contents; the SQLite-to-PostgreSQL tests run only in this mode).
 
+### Deploying to AWS Lambda
+
+The backend is ready to run on AWS Lambda behind API Gateway. Packaging and infrastructure (zip or container image,
+API Gateway, IAM, networking) are owned by DevOps; this section is what they need from the backend.
+
+**Function**
+
+| Item | Value |
+|---|---|
+| Handler | `app.lambda_handler.handler` (FastAPI through **Mangum**) |
+| Runtime | Python 3.12 |
+| Dependencies | `requirements-lambda.txt` (install for Linux: `pip install -r requirements-lambda.txt -t build/ --platform manylinux2014_x86_64 --only-binary=:all: --python-version 3.12`; use `aarch64` for Graviton) |
+| Code to package | `app/`, `migrations/`, `alembic.ini` |
+| Timeout | 15 minutes (900 s): the same function executes research runs, which take 15-60 s |
+| Memory | 1024 MB recommended |
+| Trigger | API Gateway HTTP API (payload 2.0) or REST API, proxy route `ANY /{proxy+}`; serve from the root of the stage (or a custom domain) so `/docs` and `/api/v1/...` resolve |
+| Async invocation | Set retry attempts to **0** (a failed run is shown as Failed and retried by the user, never billed twice silently) |
+
+**How research runs work on Lambda**: API Gateway ends requests after about 30 seconds and a run takes 15-60
+seconds. So `POST /runs` saves the run, invokes the same function asynchronously with
+`{"task": "execute_run", "run_id": N}` and returns 202 at once; the frontend polls `GET /runs/{id}`. Live streaming
+(`/runs/{id}/events`) is not available through API Gateway (it sends one snapshot and closes). To run the runs in a
+separate function, set `WORKER_FUNCTION_NAME`.
+
+**Secrets (AWS Secrets Manager)**
+
+| Secret | Content | Environment variable with its ARN |
+|---|---|---|
+| Application secret | JSON, keys = setting names: `{"JWT_SECRET": "<openssl rand -hex 32>", "AI_SEARCH_BASE_URL": "https://...", "AI_SEARCH_API_KEY": ""}` | `APP_SECRET_ARN` |
+| Database credentials | The secret RDS creates with **Manage master credentials in AWS Secrets Manager** (`username`, `password`), or the standard RDS format (`host`, `port`, `dbname`, `username`, `password`) | `DB_SECRET_ARN` |
+
+* Secrets are read at cold start and cached for 5 minutes per container. Any setting can also be a plain
+  environment variable; an explicit environment variable wins over the secret.
+* The database password is never put in a URL or environment variable: it is added when each connection opens.
+  When RDS rotates it, the first rejected connection re-reads the secret, so **no redeploy is needed**.
+
+**Amazon RDS (PostgreSQL 16 recommended)**
+
+| Environment variable | Value |
+|---|---|
+| `DB_SECRET_ARN` | ARN of the database credentials secret |
+| `DB_HOST` | RDS endpoint (or RDS Proxy endpoint), e.g. `gilead.xxxx.ap-south-1.rds.amazonaws.com`; not needed if the secret has `host` |
+| `DB_NAME` | Database name, e.g. `gilead` (create it once); not needed if the secret has `dbname` |
+| `DB_PORT` | Optional, default 5432 |
+| `DB_SSLMODE` | Optional, default `require` (connections are encrypted) |
+
+Alternatively set `DATABASE_URL=postgresql+psycopg://user:password@host:5432/gilead` directly (no rotation support).
+Tables are created and upgraded automatically (Alembic) on cold start; concurrent cold starts are safe (advisory
+lock). SQLite is refused on Lambda. An **RDS Proxy** is recommended: busy Lambdas open many connections (each
+container keeps at most 4).
+
+**Other environment variables**
+
+| Variable | Value |
+|---|---|
+| `APP_ENV` | `prod` |
+| `CORS_ORIGINS` | Frontend URL(s), comma-separated |
+| `SEED_DEMO_DATA` | `true` creates demo users and reference data (needed once for login in test environments) |
+| `SEED_SAMPLE_DATA` | `false` in production (`true` only for frontend test environments) |
+| `AI_SEARCH_TIMEOUT_SECONDS` | Optional, default 90 |
+
+**IAM permissions for the function role**
+* `secretsmanager:GetSecretValue` on both secrets (plus `kms:Decrypt` if they use a customer-managed KMS key)
+* `lambda:InvokeFunction` on the function itself (or on `WORKER_FUNCTION_NAME`), to start research runs
+* `AWSLambdaVPCAccessExecutionRole` when the function runs in a VPC; CloudWatch Logs as usual
+
+**Network**: with RDS in a private VPC, the function runs in private subnets and its security group must be
+allowed into the database on 5432. From the VPC it also needs to reach the **AI service** (public API Gateway:
+NAT gateway), **Secrets Manager** and the **Lambda API** (NAT gateway, or VPC interface endpoints for
+`secretsmanager` and `lambda`).
+
+**After each deployment** (optional, creates or upgrades tables without API Gateway's time limit):
+```bash
+aws lambda invoke --function-name <function> --payload '{"task": "init"}' --cli-binary-format raw-in-base64-out out.json
+```
+Then open `<API URL>/health/dependencies` (AI service status) and `<API URL>/docs`.
+
 ## 5. What is real and what is still missing (be aware before going live)
 
 | Area | State |

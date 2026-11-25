@@ -18,13 +18,15 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
+from app.core.config import settings
 from app.core.deps import DB, CurrentUser, audit, require
 from app.db import models as m
 from app.db.base import SessionLocal
 from app.services import catalog, scientific_search
 from app.services import pipeline as pl
 from app.services.integrations import words
-from app.services.orchestrator import (CAPABILITIES, elapsed_seconds, execute_run, is_stalled, pipeline_views,
+from app.services.tasks import submit_run
+from app.services.orchestrator import (CAPABILITIES, elapsed_seconds, is_stalled, pipeline_views,
                                        plan_steps, query_assets)
 
 router = APIRouter(tags=["research"])
@@ -109,7 +111,7 @@ def start_run(db, bg: BackgroundTasks, user: m.User, *, module: str, question: s
     db.flush()
     run.thread_id = run.thread_id or run.id  # first turn starts a new conversation
     db.commit()
-    bg.add_task(execute_run, run.id)
+    submit_run(bg, run.id)      # after the commit: a Lambda worker reads the run from the database
     return run
 
 
@@ -185,7 +187,9 @@ def set_notify(run_id: int, body: NotifyIn, db: DB, user: CurrentUser):
 
 @router.get("/runs/{run_id}/events")
 async def stream(run_id: int, user: CurrentUser):
-    """Server-Sent Events: pushes a snapshot whenever step/status changes, closes when terminal."""
+    """Server-Sent Events: pushes a snapshot whenever step/status changes, closes when terminal. On AWS Lambda
+    responses are buffered (no streaming through API Gateway), so a single snapshot is sent and the stream closes:
+    the client should poll GET /runs/{id} there."""
     def snapshot():
         with SessionLocal() as s:
             r = s.get(m.Run, run_id)
@@ -204,6 +208,8 @@ async def stream(run_id: int, user: CurrentUser):
                 yield f"data: {json.dumps(snap, default=str)}\n\n"
             if snap["status"] in ("Completed", "Failed", "Cancelled", "Paused") or snap["stalled"]:
                 return  # stalled: nothing more will happen until the user resumes
+            if settings.on_lambda:
+                return  # buffered: one snapshot only
             await asyncio.sleep(0.7)
     return StreamingResponse(gen(), media_type="text/event-stream")
 
@@ -234,7 +240,7 @@ def resume(run_id: int, bg: BackgroundTasks, db: DB, user: m.User = Depends(requ
     r.status = "In Progress"
     r.params = {**(r.params or {}), "ai_offline": scientific_search.is_offline()}  # a sample run resumed by a user uses the AI service
     db.commit()
-    bg.add_task(execute_run, r.id)  # re-enters at persisted step_index with persisted partial output
+    submit_run(bg, r.id)  # re-enters at persisted step_index with persisted partial output
     return run_out(r)
 
 

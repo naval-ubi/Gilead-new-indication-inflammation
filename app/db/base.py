@@ -1,10 +1,21 @@
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 from app.core.config import settings
 
 _args = {"check_same_thread": False} if settings.database_url.startswith("sqlite") else {}
-engine = create_engine(settings.database_url, connect_args=_args, pool_pre_ping=True)
+# On Lambda each container serves one request at a time and may be frozen between requests: keep few connections
+# and recycle them, so idle containers do not exhaust the database (an RDS Proxy is recommended in front of RDS).
+_pool = {"pool_size": 2, "max_overflow": 2, "pool_recycle": 300} if settings.on_lambda and not _args else {}
+engine = create_engine(settings.database_url, connect_args=_args, pool_pre_ping=True, **_pool)
+
+if settings.database_from_secret:
+    from app.core import aws_secrets
+
+    @event.listens_for(engine, "do_connect")
+    def _rds_password(dialect, conn_rec, cargs, cparams):
+        return aws_secrets.connect_with_rds_password(dialect, cargs, cparams, settings.db_secret_arn)
+
 SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
 
 

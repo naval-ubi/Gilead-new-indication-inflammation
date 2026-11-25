@@ -9,8 +9,9 @@ from app.db.migrate import prepare_database
 from app.routers import account, admin, runs, scoring, workspace
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
+def startup() -> None:
+    """Prepare the database and load demo data. Runs once per process: on uvicorn start-up, or once per Lambda
+    cold start (app/lambda_handler.py)."""
     prepare_database(engine)          # PostgreSQL: Alembic migrations · SQLite (dev): automatic upgrade
     if settings.seed_demo_data:
         from app.seed import seed, seed_reference
@@ -20,6 +21,11 @@ async def lifespan(app: FastAPI):
             if settings.seed_sample_data:
                 from app.seed_samples import seed_samples
                 seed_samples(db)      # idempotent: sample activity for frontend testing
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    startup()
     yield
 
 
