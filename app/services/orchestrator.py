@@ -200,7 +200,7 @@ def _search_with_service(db, run: m.Run, steps: list[dict], idx: int, work: dict
     steps[idx]["items"] = [{"label": n, "status": "done"} for n in names]
     work["records"], work["errors"] = parts["records"], []
     work["sources_searched"] = names
-    work["service"] = {k: parts[k] for k in ("answer", "references", "top_sources", "key_findings",
+    work["service"] = {k: parts[k] for k in ("answer", "references", "top_sources", "key_findings", "follow_ups",
                                              "retrieved_chunk_count", "source_count")}
     _log(work, f"Found {parts['source_count']} sources ({parts['retrieved_chunk_count']} passages)")
     _persist(db, run, steps, work)
@@ -327,6 +327,16 @@ def _service_parts(work: dict) -> dict:
     return service
 
 
+def follow_ups_for(db, run: m.Run, service: dict | None) -> dict:
+    """The AI service's suggested next questions, without any question already asked in this conversation."""
+    asked = set()
+    if run.thread_id:
+        asked = {(q or "").strip().lower() for q in db.scalars(select(m.Run.question).where(m.Run.thread_id == run.thread_id))}
+    asked.add((run.question or "").strip().lower())
+    qs = [q for q in (service or {}).get("follow_ups") or [] if q.strip().lower() not in asked]
+    return {"follow_ups": qs, "follow_ups_title": "Follow-up questions" if qs else None}
+
+
 def build_ai_result(db, run: m.Run, work: dict) -> dict:
     service = _service_parts(work)
     records = work.get("records", [])
@@ -338,8 +348,7 @@ def build_ai_result(db, run: m.Run, work: dict) -> dict:
         "key_findings": service["key_findings"],
         "top_sources": service["top_sources"],   # "View Details" drawer
         "references": service["references"],     # numbered reference list under the answer
-        "follow_ups": [],                  # the service does not suggest follow-up questions
-        "follow_ups_title": None,
+        **follow_ups_for(db, run, service),     # suggested by the AI service
         "evidence": records,
         "evidence_quality": {"verified": len(records), "assumptions": 0},
         "provider": "ai_scientific_search",
@@ -371,7 +380,7 @@ def build_pipeline_result(db, run: m.Run, work: dict | None = None) -> dict:
             **pipeline_views(assets, inds),
             "top_sources": service["top_sources"] if service else [],
             "references": service["references"] if service else [],
-            "follow_ups": [], "follow_ups_title": None,
+            **follow_ups_for(db, run, service),
             "provider": "ai_scientific_search" if service else None}
 
 

@@ -49,7 +49,7 @@ Admin and connector settings), `sam.patel@example.com` (Reviewer).
   automatically on start.
 * **AI content is real or absent, never made up:** answers, pipeline summaries, report text and AI Rephrase come
   from the AI Scientific Search service (see below). Without it, runs fail with a clear reason and AI Rephrase
-  returns 503. `follow_ups` is always empty (hide the chips). AI scores in Scoring start as Missing (null).
+  returns 503. `follow_ups` are the service's suggested next questions (may be empty: then hide the chips). AI scores in Scoring start as Missing (null).
 * **Run progress:** prefer polling `GET /runs/{id}` (about once a second). Stop polling when `stalled` is true (an
   "In Progress" run with no progress for 15 minutes, e.g. after a server restart) and offer Resume. `GET /runs/{id}/events` (live stream)
   works locally but may not be available in every cloud deployment.
@@ -230,8 +230,9 @@ AI_SEARCH_TIMEOUT_SECONDS=90       # a search takes about 10-15 seconds
 * Out-of-scope questions are answered locally and never sent to the service.
 * Without `AI_SEARCH_BASE_URL` runs fail with "The AI Scientific Search service is not configured" and AI Rephrase
   returns 503. Sample data never calls the service; tests use a recorded reply (`tests/fixtures/ai_search_query.json`).
-* Follow-up questions are sent on their own: the service does not keep conversation history. It does not suggest
-  follow-ups, so `follow_ups` is empty.
+* Follow-up questions are sent on their own: the service does not keep conversation history.
+* `follow_ups` (AI Search and Pipeline) are the service's `follow_up_questions`, without questions already asked in
+  the conversation. Empty when the service suggests none.
 * If a Competitive Insights report section fails, the run fails; **Retry** writes only the missing sections.
 * The service cannot score indications yet (scoring questions return 500 on its side), so AI scores start as
   Missing and users enter scores as overrides. `scoring.ai_recommend_scores` is the place to connect a scoring endpoint.
@@ -366,7 +367,7 @@ Then open `<API URL>/health/dependencies` (AI service status) and `<API URL>/doc
 | Pipeline tables, charts and report statistics | **Real** database content (`pipeline_programs` and lookups) |
 | Scope guardrail | Keyword check (`integrations.in_scope`) so off-topic questions are not sent to the billed service |
 | **AI scores** | **Missing** until the AI service can score (`scoring.ai_recommend_scores`) |
-| **Follow-up suggestions** | **None**: the service does not provide them (`follow_ups` is empty) |
+| Follow-up suggestions | **Real**: the service's `follow_up_questions` (AI Search and Pipeline answers) |
 | **Connector clients (PubMed, Citeline, IQVIA …) and secret storage** | **Not connected**: Test reports "No client is connected"; register a `BaseConnector` per source, keep credentials in a vault and only `secret_ref` in the DB |
 | Exports (PDF/PPT/Excel) | `/runs/{id}/report` returns render-ready report JSON; PDF rendering is client-side as in the prototype |
 

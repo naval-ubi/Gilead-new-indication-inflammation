@@ -156,7 +156,7 @@ JSON_SHAPES = [
     ("runs.params", '{"context": {...}, "sources": [..]|null, "resolved_sources": [..], "filters": {"target","indication","modality","stage"}, "more_filters": {"status","phase":[..],...}, "workflow": "competitive", "therapeutic_area": "...", "indications": [..], "molecular_target": "..."}'),
     ("runs.steps", '[{"name": "Search literature", "status": "pending|active|done|failed|skipped", "items": [{"label": "PubMed", "status": "done"}]}]'),
     ("runs.result (running)", '{"_work": {"activity": [..], "findings": [{"text","source","evidence":{"key","label"},"preliminary":true}], "records": [..], "errors": [..]}}'),
-    ("runs.result (AI, completed)", '{"relevant": true, "answer": "...", "key_findings": [..], "top_sources": [{"name","url"}], "references": [..], "follow_ups": [], "provider": "ai_scientific_search", "research_summary": {"stage_count","stages","sources_searched","elapsed_seconds"}}'),
+    ("runs.result (AI, completed)", '{"relevant": true, "answer": "...", "key_findings": [..], "top_sources": [{"name","url"}], "references": [..], "follow_ups": [..], "provider": "ai_scientific_search", "research_summary": {"stage_count","stages","sources_searched","elapsed_seconds"}}'),
     ("runs.result (Competitive Insights)", '{"workflow": {"key","name","short","icon"}, "context": {...}, "stats": [{"value","label","icon"}], "key_takeaways": [..], "sections": [{"index","title","bullets":[..],"table":null}], "data_sources": [..]}'),
     ("scoring_models.criteria / assessments.criteria", '[{"key": "unmet_need", "name": "Unmet Need", "rule": "1-5 based on ...", "scale": {"1": "...", "3": "...", "5": "..."}, "weight": 20}]'),
     ("assessments.weights", '{"population": 20, "unmet_need": 20, ...}   (must total 100)'),

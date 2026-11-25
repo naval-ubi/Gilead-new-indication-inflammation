@@ -167,8 +167,23 @@ def to_records(body: dict) -> list[dict]:
     return out
 
 
+def follow_up_questions(body: dict, limit: int = 5) -> list[str]:
+    """The service's suggested next questions (`follow_up_questions`), cleaned: citation markers removed,
+    blanks and duplicates dropped."""
+    out, seen = [], set()
+    for q in body.get("follow_up_questions") or []:
+        if not isinstance(q, str):
+            continue
+        q = re.sub(r"\s*\[S\d+(?:\s*,\s*S\d+)*\]", "", q).strip()
+        if q and q.lower() not in seen:
+            seen.add(q.lower())
+            out.append(q)
+    return out[:limit]
+
+
 def to_result_parts(body: dict) -> dict:
-    """answer (citations renumbered to the reference list), references, top_sources, key_findings, counts."""
+    """answer (citations renumbered to the reference list), references, top_sources, key_findings, follow_ups,
+    counts."""
     sources = body.get("sources") or []
     numbers = _numbers(sources)
     answer = renumber_citations(body.get("answer") or "", numbers)
@@ -182,5 +197,5 @@ def to_result_parts(body: dict) -> dict:
             seen.add(r["source"])
             top.append({"name": r["source"], "url": r["url"]})
     return {"answer": answer, "references": references, "top_sources": top, "records": records,
-            "key_findings": key_findings(body.get("answer") or ""),
+            "key_findings": key_findings(body.get("answer") or ""), "follow_ups": follow_up_questions(body),
             "retrieved_chunk_count": body.get("retrieved_chunk_count"), "source_count": body.get("source_count", len(sources))}

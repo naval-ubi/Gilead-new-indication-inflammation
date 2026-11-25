@@ -111,7 +111,7 @@ def test_ai_loader_steps_sources_and_result_shape(client):
     done = client.get(f"/api/v1/runs/{created['id']}/result", headers=h).json()
     assert all(i["status"] == "done" for s in done["steps"] for i in s["items"])
     res = done["result"]
-    assert res["relevant"] and res["answer"] and res["follow_ups"] == []
+    assert res["relevant"] and res["answer"] and res["follow_ups"]          # suggested by the (simulated) AI service
     assert {s["name"] for s in res["top_sources"]} == set(res["research_summary"]["sources_searched"])
     assert res["research_summary"]["stage_count"] == 6
 

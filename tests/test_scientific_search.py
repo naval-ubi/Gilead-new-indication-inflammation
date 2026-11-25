@@ -151,3 +151,34 @@ def test_offline_switches_service_off(service):
     with ss.offline():
         assert ss.is_offline()
     assert not ss.is_offline()
+
+
+# ------------------------------------------------------------------ follow-up questions
+def test_follow_ups_come_from_service(client, service):
+    parts = ss.to_result_parts(REAL)
+    assert parts["follow_ups"][1] == "How does IRAK4 inhibition affect TLR7/8 signaling in plasmacytoid dendritic cells in SLE?"
+    h = auth(client)
+    q = REAL["query"]
+    rid = client.post("/api/v1/runs", headers=h, json={"module": "ai", "question": q}).json()["id"]
+    res = client.get(f"/api/v1/runs/{rid}/result", headers=h).json()["result"]
+    assert res["follow_ups"] and q not in res["follow_ups"]                 # the question just asked is not repeated
+    assert res["follow_ups_title"] == "Follow-up questions"
+    # a follow-up turn does not suggest a question already asked earlier in the conversation
+    nxt = res["follow_ups"][0]
+    rid2 = client.post("/api/v1/runs", headers=h, json={"module": "ai", "question": nxt, "parent_run_id": rid}).json()["id"]
+    res2 = client.get(f"/api/v1/runs/{rid2}/result", headers=h).json()["result"]
+    assert nxt not in res2["follow_ups"] and q not in res2["follow_ups"]
+
+
+def test_pipeline_answer_has_follow_ups(client, service):
+    h = auth(client)
+    rid = client.post("/api/v1/runs", headers=h, json={"module": "pipeline", "question": "IRAK4 programs in SLE"}).json()["id"]
+    assert client.get(f"/api/v1/runs/{rid}/result", headers=h).json()["result"]["follow_ups"]
+
+
+def test_reply_without_follow_ups_still_works(client, service):
+    service.replies = [(200, {k: v for k, v in REAL.items() if k != "follow_up_questions"})]
+    h = auth(client)
+    rid = client.post("/api/v1/runs", headers=h, json={"module": "ai", "question": "IRAK4 and TLR signalling"}).json()["id"]
+    res = client.get(f"/api/v1/runs/{rid}/result", headers=h).json()["result"]
+    assert res["answer"] and res["follow_ups"] == [] and res["follow_ups_title"] is None

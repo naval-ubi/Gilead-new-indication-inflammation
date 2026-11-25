@@ -169,9 +169,9 @@ story += section("5. AI Scientific Search", "Conversational research with a stag
     ("Answer", [("GET", "/runs/{id}/result")],
      "result.answer (markdown; citations [n] match references[].number), references[] (title, url, source, doi, journal, "
      "publication_date), research_summary for the “Research complete” strip. A search takes about 10-15 s. "
-     "follow_ups[] is always empty (the AI service does not suggest any): hide the chips."),
+     "follow_ups[] = suggested next questions from the AI service (chips; hide when empty), titled follow_ups_title."),
     ("View Details drawer", [("GET", "/runs/{id}/result")], "key_findings[] + top_sources[{name, url}]."),
-    ("Follow-up input bar", [("POST", "/runs")], "Same body + parent_run_id = last turn's id."),
+    ("Follow-up chips / input bar", [("POST", "/runs")], "Same body + parent_run_id = last turn's id (a chip sends its text as question)."),
     ("Conversation history (reload/deep link)", [("GET", "/runs/{id}/thread")], "Render each turn; completed turns include result."),
     ("Regenerate answer", [("POST", "/runs/{id}/rerun")], "New run in the same thread."),
     ("Save Prompt / Save conversation", [("POST", "/runs/{id}/save")], "{folder?, title?} &#8594; item_id. 409 if the run is not completed."),
@@ -277,8 +277,8 @@ story += section("11. Data Connectors &amp; Admin", "Admin endpoints require the
 story += [Spacer(1, 6), Paragraph("12. Where content comes from", H2), Paragraph(
     "AI Search answers, Pipeline summaries, Competitive Insights report text and AI Rephrase come from the AI Scientific "
     "Search service. Nothing is made up: without the service a run fails with the reason (offer Retry) and AI Rephrase "
-    "returns 503. Tables, charts and report statistics come from the database. Not available yet: follow-up suggestions "
-    "(follow_ups is empty), AI scores in Scoring (null = Missing; users enter scores) and data-source clients "
+    "returns 503. Follow-up suggestions (follow_ups) also come from the service. Tables, charts and report statistics "
+    "come from the database. Not available yet: AI scores in Scoring (null = Missing; users enter scores) and data-source clients "
     "(Test connection returns connected = false). Sample runs in the demo data never call the service, so they have no AI text.", BODY)]
 
 

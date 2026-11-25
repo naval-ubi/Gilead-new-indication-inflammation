@@ -233,7 +233,7 @@ with TestClient(app) as c:
          desc="Completed answer: answer (Markdown; [n] citations match references[].number), references, top_sources "
               "(View Details) with doi, journal, publication_date, key_findings, research_summary, provider.",
          notes="409 while the run is not Completed. relevant=false: show 'Please ask a relevant question' with message. "
-               "follow_ups is always empty (the AI service does not suggest follow-ups): hide the chips. "
+               "follow_ups = suggested next questions from the AI service (show as chips; hide when empty). "
                "A search takes about 10-15 s. If the AI service is not configured or fails, the run is Failed with the reason in step_label.")
     call(c, "GET", f"/runs/{ai_done}/thread", H, template="/runs/{run_id}/thread", module=mod,
          screen="Conversation view (reload / deep link)", desc="Every turn of the conversation, oldest first; completed turns include result.")
