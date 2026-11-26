@@ -26,10 +26,21 @@ def verify_password(password: str, stored: str) -> bool:
     return hmac.compare_digest(dk, expected)
 
 
+ACCESS, REFRESH = "access", "refresh"
+
+
 def create_token(user_id: int, role: str) -> str:
+    """Access token: sent as 'Authorization: Bearer' on every API call."""
     exp = datetime.now(timezone.utc) + timedelta(minutes=settings.jwt_expire_minutes)
     # jti = unique token id, so a single token can be revoked on logout
-    return jwt.encode({"sub": str(user_id), "role": role, "exp": exp, "jti": uuid.uuid4().hex},
+    return jwt.encode({"sub": str(user_id), "role": role, "exp": exp, "jti": uuid.uuid4().hex, "typ": ACCESS},
+                      settings.jwt_secret, algorithm="HS256")
+
+
+def create_refresh_token(user_id: int) -> str:
+    """Refresh token: only accepted by POST /auth/refresh, which exchanges it (once) for a new token pair."""
+    exp = datetime.now(timezone.utc) + timedelta(days=settings.jwt_refresh_expire_days)
+    return jwt.encode({"sub": str(user_id), "exp": exp, "jti": uuid.uuid4().hex, "typ": REFRESH},
                       settings.jwt_secret, algorithm="HS256")
 
 

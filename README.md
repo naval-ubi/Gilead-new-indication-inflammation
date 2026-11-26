@@ -101,7 +101,8 @@ Key decisions
 ## 3. API map (prefix `/api/v1`)
 
 ```
-POST /auth/login            POST /auth/logout       GET /me   GET/PATCH /me/profile
+POST /auth/login            POST /auth/refresh      POST /auth/logout
+GET  /me                    GET/PATCH /me/profile
 PUT  /me/context            PUT /me/preferences
 GET  /notifications         POST /notifications/read-all   POST /notifications/{id}/read
 POST /help/chat
@@ -188,6 +189,10 @@ Reference PDFs in `docs/` (regenerate after API or model changes; needs `pip ins
   `PATCH /me/profile {name}`, `POST /auth/logout` (204). Tokens now carry a `jti`; logout stores it in
   `revoked_tokens` and every authenticated call rejects it with 401. Other sessions of the same user stay signed in.
   `/me` and the login response now include `permissions`.
+* **Refresh tokens**: login also returns a `refresh_token` (valid `JWT_REFRESH_EXPIRE_DAYS`, default 7). When an
+  API call returns 401, `POST /auth/refresh {refresh_token}` returns a new `access_token` + `refresh_token`; each refresh
+  token works once (rotation, revoked in `revoked_tokens`). Refresh tokens are rejected as Bearer tokens.
+  `POST /auth/logout {refresh_token}` also revokes the refresh token. No schema change.
 * **Schema**: `revoked_tokens` table; `runs.thread_id`, `runs.notify`, `runs.workflow`. On start-up `add_missing_columns()` adds them to an
   existing dev database; PostgreSQL uses Alembic migrations (see "Using PostgreSQL"). `seed_reference()` idempotently adds the 5 workflows,
   5 report templates and prompt metadata.

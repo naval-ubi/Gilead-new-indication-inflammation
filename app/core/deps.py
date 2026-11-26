@@ -6,7 +6,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 
-from app.core.security import decode_token
+from app.core.security import REFRESH, decode_token
 from app.db import models as m
 from app.db.base import get_db
 
@@ -26,6 +26,8 @@ def token_claims(db: DB, cred: Annotated[HTTPAuthorizationCredentials | None, De
         int(claims["sub"])
     except (jwt.PyJWTError, KeyError, ValueError):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or expired token")
+    if claims.get("typ") == REFRESH:  # tokens issued before refresh support have no typ: they are access tokens
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Use the access token here, not the refresh token")
     if claims.get("jti") and db.get(m.RevokedToken, claims["jti"]):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Signed out. Please sign in again")
     return claims

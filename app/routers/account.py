@@ -2,12 +2,14 @@
 import re
 from datetime import datetime, timezone
 
+import jwt
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from app.core.deps import DB, Claims, CurrentUser, audit
-from app.core.security import create_token, verify_password
+from app.core.security import REFRESH, create_refresh_token, create_token, decode_token, verify_password
 from app.db import models as m
 from app.services import catalog
 
@@ -20,6 +22,14 @@ ALL_INDICATIONS = catalog.ALL_INDICATIONS
 class LoginIn(BaseModel):
     email: str
     password: str
+
+
+class RefreshIn(BaseModel):
+    refresh_token: str
+
+
+class LogoutIn(BaseModel):
+    refresh_token: str | None = None
 
 
 class ContextIn(BaseModel):
@@ -48,20 +58,69 @@ def login(body: LoginIn, db: DB):
         raise HTTPException(401, "Invalid credentials")
     u.last_login = datetime.now(timezone.utc)
     db.commit()
-    return {"access_token": create_token(u.id, u.role.name), "token_type": "bearer", "user": user_out(u)}
+    return {**token_pair(u), "user": user_out(u)}
+
+
+def token_pair(u: m.User) -> dict:
+    return {"access_token": create_token(u.id, u.role.name), "refresh_token": create_refresh_token(u.id),
+            "token_type": "bearer"}
+
+
+def _revoke(db, claims: dict, user_id: int) -> None:
+    """Adds the token's jti to revoked_tokens (no commit). Rows are needed only until the token would expire."""
+    if claims.get("jti") and not db.get(m.RevokedToken, claims["jti"]):
+        db.add(m.RevokedToken(jti=claims["jti"], user_id=user_id,
+                              expires_at=datetime.fromtimestamp(claims["exp"], timezone.utc)))
+
+
+def _refresh_claims(db, token: str) -> dict:
+    """Decoded claims of a valid, unused refresh token, else 401."""
+    try:
+        claims = decode_token(token)
+        int(claims["sub"])
+    except (jwt.PyJWTError, KeyError, ValueError):
+        raise HTTPException(401, "Invalid or expired refresh token. Please sign in again")
+    if claims.get("typ") != REFRESH:
+        raise HTTPException(401, "Not a refresh token")
+    if db.get(m.RevokedToken, claims["jti"]):
+        raise HTTPException(401, "Refresh token already used or signed out. Please sign in again")
+    return claims
+
+
+@router.post("/auth/refresh")
+def refresh(body: RefreshIn, db: DB):
+    """Exchanges a refresh token for a new access token AND a new refresh token (rotation): the refresh token sent
+    is revoked, so each one works only once. The role in the new access token is read fresh from the database."""
+    claims = _refresh_claims(db, body.refresh_token)
+    u = db.get(m.User, int(claims["sub"]))
+    if not u or u.status != "Active":
+        raise HTTPException(401, "User inactive")
+    _revoke(db, claims, u.id)
+    try:
+        db.commit()
+    except IntegrityError:  # two refreshes with the same token at once: only the first wins
+        db.rollback()
+        raise HTTPException(401, "Refresh token already used. Please sign in again")
+    return token_pair(u)
 
 
 @router.post("/auth/logout", status_code=204)
-def logout(db: DB, user: CurrentUser, claims: Claims):
+def logout(db: DB, user: CurrentUser, claims: Claims, body: LogoutIn | None = None):
     """Header profile menu -> Logout. Revokes the token used for this call; any later call with it returns 401.
+    Send {"refresh_token": ...} too so the session cannot be renewed. An invalid refresh token is ignored.
     Saved searches and Workspace items are untouched. Unsaved-edit warnings are handled by the UI before calling."""
     now = datetime.now(timezone.utc)
     # housekeeping: revoked rows are only needed until the token would have expired anyway
     for old in db.scalars(select(m.RevokedToken).where(m.RevokedToken.expires_at < now)):
         db.delete(old)
-    if claims.get("jti") and not db.get(m.RevokedToken, claims["jti"]):
-        db.add(m.RevokedToken(jti=claims["jti"], user_id=user.id,
-                              expires_at=datetime.fromtimestamp(claims["exp"], timezone.utc)))
+    _revoke(db, claims, user.id)
+    if body and body.refresh_token:
+        try:
+            rc = decode_token(body.refresh_token)
+            if rc.get("typ") == REFRESH and int(rc["sub"]) == user.id:
+                _revoke(db, rc, user.id)
+        except (jwt.PyJWTError, KeyError, ValueError):
+            pass
     db.commit()
     audit(db, user, "Logged out", "user", user.id)
 

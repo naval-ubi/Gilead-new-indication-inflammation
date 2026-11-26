@@ -10,7 +10,8 @@ class Settings(BaseSettings):
     app_env: str = "dev"
     database_url: str = "sqlite:///./gilead.db"
     jwt_secret: str = "dev-secret-change-me"
-    jwt_expire_minutes: int = 480
+    jwt_expire_minutes: int = 480        # access token lifetime
+    jwt_refresh_expire_days: int = 7     # refresh token lifetime (POST /auth/refresh)
     cors_origins: str = "http://localhost:5173,http://localhost:3000"
     seed_demo_data: bool = True
     seed_sample_data: bool = False   # frontend testing: runs, saved items, sharing, scoring (app/seed_samples.py)

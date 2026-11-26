@@ -216,6 +216,25 @@ def test_profile_and_logout(client):
     assert client.post("/api/v1/auth/logout").status_code == 401
 
 
+def test_refresh_token_rotation_and_logout(client):
+    login = client.post("/api/v1/auth/login", json={"email": "swanik@example.com", "password": "ChangeMe123!"}).json()
+    access, rt = login["access_token"], login["refresh_token"]
+    assert client.get("/api/v1/me", headers={"Authorization": f"Bearer {rt}"}).status_code == 401   # not an access token
+    assert client.post("/api/v1/auth/refresh", json={"refresh_token": access}).status_code == 401   # not a refresh token
+    assert client.post("/api/v1/auth/refresh", json={"refresh_token": "garbage"}).status_code == 401
+    new = client.post("/api/v1/auth/refresh", json={"refresh_token": rt})
+    assert new.status_code == 200 and new.json()["token_type"] == "bearer"
+    new = new.json()
+    assert new["refresh_token"] != rt and new["access_token"] != access
+    assert client.get("/api/v1/me", headers={"Authorization": f"Bearer {new['access_token']}"}).status_code == 200
+    assert client.post("/api/v1/auth/refresh", json={"refresh_token": rt}).status_code == 401       # used once only
+    # logout with the refresh token: neither token works afterwards
+    h = {"Authorization": f"Bearer {new['access_token']}"}
+    assert client.post("/api/v1/auth/logout", headers=h, json={"refresh_token": new["refresh_token"]}).status_code == 204
+    assert client.get("/api/v1/me", headers=h).status_code == 401
+    assert client.post("/api/v1/auth/refresh", json={"refresh_token": new["refresh_token"]}).status_code == 401
+
+
 # ------------------------------------------------------------------ v0.4: normalised roles, groups, pipeline, overrides
 def test_roles_groups_admin(client):
     admin = auth(client, "maria.chen@example.com")
